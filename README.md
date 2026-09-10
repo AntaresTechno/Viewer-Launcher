@@ -1,22 +1,23 @@
 # Viewer Launcher
 
-一个 Windows x64 的 Go + Gio 原生启动器。它将 [AntaresTechno/Viewer](https://github.com/AntaresTechno/Viewer)
-的 FastAPI 后端运行在隔离的 CPython 3.13 环境中，并从本仓库的发布分支取用预构建前端。
-浏览器只访问本机的 `127.0.0.1:18080`；SQLite 数据位于用户配置目录，不会随运行时更新被覆盖。
+一个 Windows x64 的 Go + Gio 原生启动器。它以 Go HTTP 服务承载 Viewer 前端，反向代理 API 到隔离的 CPython 后端。
+浏览器和 Python 均只绑定本机回环地址；SQLite 数据位于用户配置目录，不会随更新被覆盖。
 
 ## 发布结构
 
 | 分支 | 工作流 | 内容 |
 | --- | --- | --- |
-| `frontend-dist` | `Build Viewer frontend` | 上游 `frontend/dist`、上游提交号和 GPL 文本 |
-| `runtime-windows-amd64` | `Build Viewer runtime` | CPython 嵌入式运行时、后端、Windows x64 wheels、依赖许可证报告 |
+| `web` | `Build Viewer web branch` | 上游编译后的 `dist`、上游提交号和 GPL 文本 |
+| `lib` | `Build Viewer lib dependency branch` | 默认最新 CPython 3.12 嵌入式包、Windows x64 wheels、许可证报告 |
 
-启动器只接受这两个分支归档的预期目录布局，解压时拒绝绝对路径与 `..` 路径。更新以暂存目录下载并以目录重命名切换，失败不会破坏已安装版本。
+安装逻辑为：读取 `lib` 的提交清单 → 拉取 `web` → 从 Viewer `main` 当时对应的不可变 commit 拉取 `backend` → 拉取 `lib` → 核验前端、后端、Python、依赖许可证报告及三个提交号。归档解压拒绝绝对路径、`..` 和符号链接；更新以暂存目录下载并以目录重命名切换。
+
+启动逻辑为：嵌入式 Python 在 `127.0.0.1:18081` 运行 Uvicorn；Go 在 `127.0.0.1:18080` 提供 `web` 中的 `dist` 文件，将 `/api` 与 `/dav` 反向代理至 Python，并负责 SPA 回退。窗口显示 Go、代理、Python/Uvicorn 日志最近 8 行，完整日志保存在 `logs/launcher.log`。
 
 ## 初次配置
 
 1. 将此仓库推送到 GitHub，并在仓库 Settings → Actions → General 中允许 workflow 对 `GITHUB_TOKEN` 读写。
-2. 确认 `frontend-dist` 和 `runtime-windows-amd64` 没有分支保护规则阻止 Actions 推送。
+2. 确认 `web` 和 `lib` 没有分支保护规则阻止 Actions 推送。
 3. 手动运行两个构建工作流；先取得上游的完整 commit SHA，并把同一个 SHA 填入两次 dispatch 表单。
    启动器会读取两侧元数据并拒绝不匹配的组合。
 4. 构建启动器时嵌入你的 GitHub 仓库名：

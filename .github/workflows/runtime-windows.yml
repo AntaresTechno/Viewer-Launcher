@@ -1,4 +1,4 @@
-name: Build Viewer runtime
+name: Build Viewer lib dependency branch
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ on:
       python_version:
         description: CPython embeddable Windows version
         required: true
-        default: 3.13.7
+        default: "3.12"
 
 permissions:
   contents: write
@@ -30,34 +30,35 @@ jobs:
         with:
           python-version: ${{ inputs.python_version }}
           architecture: x64
-      - name: Create CPython embedded runtime and offline wheel set
+      - name: Create CPython embedded dependency bundle and offline wheel set
         shell: pwsh
         env:
           PYTHON_VERSION: ${{ inputs.python_version }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $publish = Join-Path $env:RUNNER_TEMP 'viewer-runtime-publish'
-          $runtime = Join-Path $publish 'runtime'
-          New-Item -ItemType Directory -Force $runtime, (Join-Path $runtime 'licenses/python'), (Join-Path $runtime 'LICENSES') | Out-Null
+          $publish = Join-Path $env:RUNNER_TEMP 'viewer-lib-publish'
+          $lib = Join-Path $publish 'lib'
+          New-Item -ItemType Directory -Force $lib, (Join-Path $lib 'licenses/python'), (Join-Path $lib 'LICENSES') | Out-Null
+          $resolved = python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+          $env:PYTHON_VERSION = $resolved
+          "PYTHON_VERSION=$resolved" >> $env:GITHUB_ENV
           $zip = Join-Path $env:RUNNER_TEMP "python-$env:PYTHON_VERSION-embed-amd64.zip"
           Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$env:PYTHON_VERSION/python-$env:PYTHON_VERSION-embed-amd64.zip" -OutFile $zip
-          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $runtime 'python') -Force
-          $pth = Get-ChildItem (Join-Path $runtime 'python') -Filter 'python*._pth' | Select-Object -First 1
-          (Get-Content -LiteralPath $pth.FullName) -replace '^#import site$', "Lib/site-packages`n../backend`nimport site" | Set-Content -LiteralPath $pth.FullName -Encoding ascii
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $lib 'python') -Force
+          $pth = Get-ChildItem (Join-Path $lib 'python') -Filter 'python*._pth' | Select-Object -First 1
+          (Get-Content -LiteralPath $pth.FullName) -replace '^#import site$', "Lib/site-packages`n../../backend`nimport site" | Set-Content -LiteralPath $pth.FullName -Encoding ascii
           python -m pip install --upgrade pip
           python -m pip download --only-binary=:all: --dest (Join-Path $env:RUNNER_TEMP 'wheels') -r upstream/backend/requirements.txt
-          python -m pip install --no-index --find-links (Join-Path $env:RUNNER_TEMP 'wheels') --target (Join-Path $runtime 'python/Lib/site-packages') -r upstream/backend/requirements.txt
-          Copy-Item upstream/backend (Join-Path $runtime 'backend') -Recurse -Force
-          Remove-Item (Join-Path $runtime 'backend/tests') -Recurse -Force -ErrorAction SilentlyContinue
-          Copy-Item upstream/LICENSE (Join-Path $runtime 'LICENSES/Viewer-GPL-3.0-or-later.txt') -Force
-          Copy-Item (Join-Path $runtime 'python/LICENSE.txt') (Join-Path $runtime 'LICENSES/CPython.txt') -Force -ErrorAction SilentlyContinue
-          python tools/license_check.py --site-packages (Join-Path $runtime 'python/Lib/site-packages') --policy licenses-policy.json --report (Join-Path $runtime 'licenses/python-packages.json') --notices-dir (Join-Path $runtime 'licenses/python')
+          python -m pip install --no-index --find-links (Join-Path $env:RUNNER_TEMP 'wheels') --target (Join-Path $lib 'python/Lib/site-packages') -r upstream/backend/requirements.txt
+          Copy-Item upstream/LICENSE (Join-Path $lib 'LICENSES/Viewer-GPL-3.0-or-later.txt') -Force
+          Copy-Item (Join-Path $lib 'python/LICENSE.txt') (Join-Path $lib 'LICENSES/CPython.txt') -Force -ErrorAction SilentlyContinue
+          python tools/license_check.py --site-packages (Join-Path $lib 'python/Lib/site-packages') --policy licenses-policy.json --report (Join-Path $lib 'licenses/python-packages.json') --notices-dir (Join-Path $lib 'licenses/python')
           $commit = git -C upstream rev-parse HEAD
-          @{ upstream_repository = 'AntaresTechno/Viewer'; upstream_commit = $commit; python_version = $env:PYTHON_VERSION; built_at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $runtime 'runtime.json') -Encoding utf8
-      - name: Publish reviewed runtime snapshot
+          @{ upstream_repository = 'AntaresTechno/Viewer'; upstream_commit = $commit; python_version = $env:PYTHON_VERSION; built_at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $lib 'lib.json') -Encoding utf8
+      - name: Publish reviewed lib snapshot
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: runtime-windows-amd64
-          publish_dir: ${{ runner.temp }}/viewer-runtime-publish
+          publish_branch: lib
+          publish_dir: ${{ runner.temp }}/viewer-lib-publish
           force_orphan: true

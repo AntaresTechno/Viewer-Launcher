@@ -1,4 +1,4 @@
-name: Build Viewer frontend
+name: Build Viewer web branch
 
 on:
   workflow_dispatch:
@@ -35,14 +35,14 @@ jobs:
       - name: Prepare published dist branch
         shell: bash
         run: |
-          mkdir -p publish/dist
-          cp -a upstream/frontend/dist/. publish/dist/
-          cp upstream/LICENSE publish/dist/Viewer-GPL-3.0-or-later.txt
-          printf '{"upstream_repository":"AntaresTechno/Viewer","upstream_commit":"%s","built_at":"%s"}\n' "$(git -C upstream rev-parse HEAD)" "$(date --utc +%FT%TZ)" > publish/dist/release.json
+          mkdir -p publish/web
+          cp -a upstream/frontend/dist/. publish/web/
+          cp upstream/LICENSE publish/web/Viewer-GPL-3.0-or-later.txt
+          printf '{"upstream_repository":"AntaresTechno/Viewer","upstream_commit":"%s","built_at":"%s"}\n' "$(git -C upstream rev-parse HEAD)" "$(date --utc +%FT%TZ)" > publish/web/release.json
       - name: Publish build snapshot
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_branch: frontend-dist
+          publish_branch: web
           publish_dir: publish
           force_orphan: true

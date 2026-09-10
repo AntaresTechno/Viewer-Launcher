@@ -1,5 +1,5 @@
-// Viewer Launcher starts AntaresTechno/Viewer from a self-contained Python
-// runtime.  The upstream Viewer is GPL-3.0-or-later; see LICENSES/.
+// Viewer Launcher hosts Viewer web assets and starts the upstream FastAPI
+// backend from a self-contained Python dependency bundle.
 package main
 
 import (
@@ -35,7 +35,7 @@ func main() {
 		window := new(app.Window)
 		window.Option(
 			app.Title("Viewer Launcher"),
-			app.Size(unit.Dp(560), unit.Dp(420)),
+			app.Size(unit.Dp(680), unit.Dp(620)),
 		)
 		if err := run(window); err != nil {
 			log.Printf("launcher stopped: %v", err)
@@ -116,8 +116,8 @@ func (ui *launcherUI) layout(gtx layout.Context, th *material.Theme) {
 				)
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
-			layout.Rigid(material.Button(th, &ui.update, "更新运行时与前端后重启").Layout),
-			layout.Rigid(layout.Spacer{Height: unit.Dp(22)}.Layout),
+			layout.Rigid(material.Button(th, &ui.update, "更新 web、后端与 lib 后重启").Layout),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				text := "首次登录请立即修改上游默认管理员密码。"
 				if strings.TrimSpace(ui.launcher.Repository()) == "" {
@@ -127,6 +127,24 @@ func (ui *launcherUI) layout(gtx layout.Context, th *material.Theme) {
 				label.Color = color.NRGBA{R: 100, G: 100, B: 100, A: 255}
 				return label.Layout(gtx)
 			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
+			layout.Rigid(material.Caption(th, "许可：Viewer GPLv3+ · CPython PSF · Gio MIT；Python 依赖见 lib/licenses。").Layout),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(12)}.Layout),
+			layout.Rigid(material.Body2(th, "日志（界面显示最近 8 行；完整日志在 logs/launcher.log）").Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				label := material.Caption(th, tailLines(state.Logs, 8))
+				label.MaxLines = 8
+				label.Color = color.NRGBA{R: 75, G: 75, B: 75, A: 255}
+				return label.Layout(gtx)
+			}),
 		)
 	})
+}
+
+func tailLines(value string, limit int) string {
+	lines := strings.Split(strings.TrimSpace(value), "\n")
+	if len(lines) > limit {
+		lines = lines[len(lines)-limit:]
+	}
+	return strings.Join(lines, "\n")
 }

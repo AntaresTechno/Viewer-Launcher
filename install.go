@@ -8,18 +8,22 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
 
-// InstallBranch downloads a GitHub branch archive over HTTPS, validates every
-// ZIP path, and atomically replaces targetName.  Branches are generated only
-// by this repository's reviewed GitHub Actions workflows.
-func InstallBranch(ctx context.Context, destination, repository, branch, targetName string) error {
+// InstallTree downloads a GitHub ref archive over HTTPS, validates every ZIP
+// path, and atomically replaces destinationName with sourceName. For the
+// Viewer backend, ref is the immutable commit recorded by lib/lib.json.
+func InstallTree(ctx context.Context, destination, repository, ref, sourceName, destinationName string) error {
 	if !validRepository(repository) {
 		return fmt.Errorf("invalid GitHub repository %q", repository)
 	}
-	url := fmt.Sprintf("https://codeload.github.com/%s/zip/refs/heads/%s", repository, branch)
+	if !validGitHubRef(ref) {
+		return fmt.Errorf("invalid GitHub ref %q", ref)
+	}
+	url := fmt.Sprintf("https://codeload.github.com/%s/zip/%s", repository, ref)
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
@@ -27,11 +31,11 @@ func InstallBranch(ctx context.Context, destination, repository, branch, targetN
 	client := &http.Client{Timeout: 10 * time.Minute}
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", branch, err)
+		return fmt.Errorf("download %s: %w", ref, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: GitHub returned %s", branch, response.Status)
+		return fmt.Errorf("download %s: GitHub returned %s", ref, response.Status)
 	}
 	work, err := os.MkdirTemp(destination, ".viewer-download-")
 	if err != nil {
@@ -54,22 +58,18 @@ func InstallBranch(ctx context.Context, destination, repository, branch, targetN
 	if err := unzipBranch(archivePath, staging); err != nil {
 		return err
 	}
-	// Workflows publish runtime/ and dist/ at the archive root below GitHub's
-	// generated top-level directory.  Do not accept an arbitrary layout.
-	source := filepath.Join(staging, targetName)
+	// The web and lib workflows publish one named directory below GitHub's
+	// generated top-level archive directory. Do not accept an arbitrary layout.
+	source := filepath.Join(staging, sourceName)
 	if _, err := os.Stat(source); err != nil {
-		return fmt.Errorf("branch %s does not contain required %s/ directory", branch, targetName)
+		return fmt.Errorf("ref %s does not contain required %s/ directory", ref, sourceName)
 	}
-	if targetName == "dist" {
-		source = filepath.Join(staging, "dist")
-		targetName = filepath.Join("frontend", "dist")
-	}
-	final := filepath.Join(destination, targetName)
+	final := filepath.Join(destination, destinationName)
 	backup := final + ".previous"
 	_ = os.RemoveAll(backup)
 	if _, err := os.Stat(final); err == nil {
 		if err := os.Rename(final, backup); err != nil {
-			return fmt.Errorf("stage previous %s: %w", targetName, err)
+			return fmt.Errorf("stage previous %s: %w", destinationName, err)
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
@@ -77,7 +77,7 @@ func InstallBranch(ctx context.Context, destination, repository, branch, targetN
 	}
 	if err := os.Rename(source, final); err != nil {
 		_ = os.Rename(backup, final)
-		return fmt.Errorf("activate %s: %w", targetName, err)
+		return fmt.Errorf("activate %s: %w", destinationName, err)
 	}
 	_ = os.RemoveAll(backup)
 	return nil
@@ -140,4 +140,11 @@ func unzipBranch(archivePath, destination string) error {
 func validRepository(value string) bool {
 	parts := strings.Split(value, "/")
 	return len(parts) == 2 && parts[0] != "" && parts[1] != "" && !strings.ContainsAny(value, "\\ :?&#")
+}
+
+var validRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
+var commitHash = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+func validGitHubRef(value string) bool {
+	return validRef.MatchString(value) && !strings.Contains(value, "..")
 }
