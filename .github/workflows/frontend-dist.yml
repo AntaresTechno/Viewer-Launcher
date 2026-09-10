@@ -1,0 +1,48 @@
+name: Build Viewer frontend
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Viewer tag, branch, or immutable commit SHA
+        required: true
+        default: main
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ inputs.upstream_ref || 'main' }}
+          path: upstream
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: upstream/frontend/package-lock.json
+      - name: Install and build pinned frontend dependencies
+        working-directory: upstream/frontend
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild esbuild
+          npm run build
+      - name: Prepare published dist branch
+        shell: bash
+        run: |
+          mkdir -p publish/dist
+          cp -a upstream/frontend/dist/. publish/dist/
+          cp upstream/LICENSE publish/dist/Viewer-GPL-3.0-or-later.txt
+          printf '{"upstream_repository":"AntaresTechno/Viewer","upstream_commit":"%s","built_at":"%s"}\n' "$(git -C upstream rev-parse HEAD)" "$(date --utc +%FT%TZ)" > publish/dist/release.json
+      - name: Publish build snapshot
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: frontend-dist
+          publish_dir: publish
+          force_orphan: true

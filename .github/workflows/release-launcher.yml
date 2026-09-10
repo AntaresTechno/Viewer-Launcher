@@ -1,0 +1,27 @@
+name: Build launcher
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+      - name: Build Windows launcher
+        shell: pwsh
+        run: |
+          go mod download
+          go build -trimpath -ldflags "-s -w -X main.repository=${{ github.repository }}" -o ViewerLauncher.exe .
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ViewerLauncher-windows-amd64
+          path: ViewerLauncher.exe

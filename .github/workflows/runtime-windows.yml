@@ -1,0 +1,63 @@
+name: Build Viewer runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Viewer tag, branch, or immutable commit SHA
+        required: true
+        default: main
+      python_version:
+        description: CPython embeddable Windows version
+        required: true
+        default: 3.13.7
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ inputs.upstream_ref || 'main' }}
+          path: upstream
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python_version }}
+          architecture: x64
+      - name: Create CPython embedded runtime and offline wheel set
+        shell: pwsh
+        env:
+          PYTHON_VERSION: ${{ inputs.python_version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $publish = Join-Path $env:RUNNER_TEMP 'viewer-runtime-publish'
+          $runtime = Join-Path $publish 'runtime'
+          New-Item -ItemType Directory -Force $runtime, (Join-Path $runtime 'licenses/python'), (Join-Path $runtime 'LICENSES') | Out-Null
+          $zip = Join-Path $env:RUNNER_TEMP "python-$env:PYTHON_VERSION-embed-amd64.zip"
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$env:PYTHON_VERSION/python-$env:PYTHON_VERSION-embed-amd64.zip" -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $runtime 'python') -Force
+          $pth = Get-ChildItem (Join-Path $runtime 'python') -Filter 'python*._pth' | Select-Object -First 1
+          (Get-Content -LiteralPath $pth.FullName) -replace '^#import site$', "Lib/site-packages`n../backend`nimport site" | Set-Content -LiteralPath $pth.FullName -Encoding ascii
+          python -m pip install --upgrade pip
+          python -m pip download --only-binary=:all: --dest (Join-Path $env:RUNNER_TEMP 'wheels') -r upstream/backend/requirements.txt
+          python -m pip install --no-index --find-links (Join-Path $env:RUNNER_TEMP 'wheels') --target (Join-Path $runtime 'python/Lib/site-packages') -r upstream/backend/requirements.txt
+          Copy-Item upstream/backend (Join-Path $runtime 'backend') -Recurse -Force
+          Remove-Item (Join-Path $runtime 'backend/tests') -Recurse -Force -ErrorAction SilentlyContinue
+          Copy-Item upstream/LICENSE (Join-Path $runtime 'LICENSES/Viewer-GPL-3.0-or-later.txt') -Force
+          Copy-Item (Join-Path $runtime 'python/LICENSE.txt') (Join-Path $runtime 'LICENSES/CPython.txt') -Force -ErrorAction SilentlyContinue
+          python tools/license_check.py --site-packages (Join-Path $runtime 'python/Lib/site-packages') --policy licenses-policy.json --report (Join-Path $runtime 'licenses/python-packages.json') --notices-dir (Join-Path $runtime 'licenses/python')
+          $commit = git -C upstream rev-parse HEAD
+          @{ upstream_repository = 'AntaresTechno/Viewer'; upstream_commit = $commit; python_version = $env:PYTHON_VERSION; built_at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $runtime 'runtime.json') -Encoding utf8
+      - name: Publish reviewed runtime snapshot
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: runtime-windows-amd64
+          publish_dir: ${{ runner.temp }}/viewer-runtime-publish
+          force_orphan: true

@@ -1,0 +1,6 @@
+/bin/
+/dist/
+/.viewer-download-*/
+*.exe
+*.zip
+*.log
