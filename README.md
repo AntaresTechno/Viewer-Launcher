@@ -27,14 +27,14 @@
 1. 将此仓库推送到 GitHub，并在仓库 Settings → Actions → General 中允许 workflow 对 `GITHUB_TOKEN` 读写。
 2. 确认 `web` 和 `lib` 没有分支保护规则阻止 Actions 推送。
 3. 除自动生成的 `web`、`lib` 分支外，每次 push 都会自动运行 web、`Build Viewer lib` 和启动器构建。`Build Viewer lib` 先固定一个上游 commit，再并行构建 Windows 与 Linux 依赖，最后由一个发布任务写入 `lib` 分支，因此不会产生分支写入竞争。若需固定某个 Viewer 版本，可手动 dispatch 并填入上游 commit SHA。启动器会读取两侧元数据并拒绝不匹配的组合。
-4. 构建启动器时嵌入你的 GitHub 仓库名：
+4. 直接构建即可使用默认发布仓库 `AntaresTechno/Viewer-Launcher`：
 
 ```powershell
 go mod tidy
-go build -ldflags "-X main.repository=OWNER/REPOSITORY" -o ViewerLauncher .
+go build -o ViewerLauncher .
 ```
 
-也可以仅为测试设置 `VIEWER_LAUNCHER_REPOSITORY=OWNER/REPOSITORY`。发布工作流会自动注入该值。
+fork 仓库仍可通过 `-ldflags "-X main.repository=OWNER/REPOSITORY"` 或环境变量 `VIEWER_LAUNCHER_REPOSITORY=OWNER/REPOSITORY` 覆盖默认值。发布工作流会自动注入当前仓库名。
 
 支持 `windows/amd64`、`linux/amd64` 与 `linux/arm64`。首次运行后，请立即修改 Viewer 的默认管理员密码。启动器刻意将 Uvicorn 绑定到回环地址，请不要改为局域网暴露。
 

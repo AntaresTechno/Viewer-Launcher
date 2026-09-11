@@ -18,9 +18,9 @@ import (
 	"gioui.org/widget/material"
 )
 
-// repository is injected by the release workflow.  For a local build set it
-// with: go build -ldflags "-X main.repository=OWNER/REPOSITORY".
-var repository = ""
+// repository defaults to the official launcher repository. Forks can override
+// it with -ldflags or VIEWER_LAUNCHER_REPOSITORY.
+var repository = "AntaresTechno/Viewer-Launcher"
 
 type launcherUI struct {
 	launcher    *Launcher
