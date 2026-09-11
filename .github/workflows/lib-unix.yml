@@ -1,0 +1,92 @@
+name: Build Viewer lib for Linux and macOS
+
+on:
+  push:
+    branches-ignore: [web, lib]
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Viewer main commit SHA used for requirements and backend
+        required: true
+        default: main
+
+permissions:
+  contents: write
+
+concurrency:
+  group: lib-branch-publication
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            key: linux-amd64
+            pbs_suffix: x86_64-unknown-linux-gnu
+            pip_platform: manylinux_2_17_x86_64
+          - runner: ubuntu-24.04
+            key: linux-arm64
+            pbs_suffix: aarch64-unknown-linux-gnu
+            pip_platform: manylinux_2_17_aarch64
+          - runner: macos-13
+            key: darwin-amd64
+            pbs_suffix: x86_64-apple-darwin
+            pip_platform: macosx_10_13_x86_64
+          - runner: macos-14
+            key: darwin-arm64
+            pbs_suffix: aarch64-apple-darwin
+            pip_platform: macosx_11_0_arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ inputs.upstream_ref || 'main' }}
+          path: upstream
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build portable lib directory
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM_KEY: ${{ matrix.key }}
+          PBS_SUFFIX: ${{ matrix.pbs_suffix }}
+          PIP_PLATFORM: ${{ matrix.pip_platform }}
+        run: |
+          set -euo pipefail
+          publish="$RUNNER_TEMP/viewer-lib-publish"
+          lib="$publish/lib/$PLATFORM_KEY"
+          mkdir -p "$lib/licenses/python" "$lib/LICENSES" "$RUNNER_TEMP/wheels" "$RUNNER_TEMP/pbs"
+          asset="$(gh api repos/astral-sh/python-build-standalone/releases/latest --jq '.assets[].name' | grep "^cpython-3\.12.*${PBS_SUFFIX}-install_only\.tar\.gz$" | head -n 1)"
+          test -n "$asset"
+          gh release download --repo astral-sh/python-build-standalone --pattern "$asset" --dir "$RUNNER_TEMP/pbs"
+          tar -xzf "$RUNNER_TEMP/pbs/$asset" -C "$RUNNER_TEMP/pbs"
+          prefix="$(dirname "$(dirname "$(find "$RUNNER_TEMP/pbs" -type f -path '*/bin/python3' -print -quit)")")"
+          test -x "$prefix/bin/python3"
+          mv "$prefix" "$lib/python"
+          site_packages="$(find "$lib/python/lib" -type d -name site-packages -print -quit)"
+          test -n "$site_packages"
+          python -m pip download --only-binary=:all: --platform "$PIP_PLATFORM" --implementation cp --python-version 312 --abi cp312 --dest "$RUNNER_TEMP/wheels" -r upstream/backend/requirements.txt
+          python tools/install_wheels.py --wheels "$RUNNER_TEMP/wheels" --target "$site_packages"
+          cp upstream/LICENSE "$lib/LICENSES/Viewer-GPL-3.0-or-later.txt"
+          python_license="$(find "$lib/python" -maxdepth 3 -type f -iname 'LICENSE*' -print -quit)"
+          test -n "$python_license"
+          cp "$python_license" "$lib/LICENSES/CPython.txt"
+          python tools/license_check.py --site-packages "$site_packages" --policy licenses-policy.json --report "$lib/licenses/python-packages.json" --notices-dir "$lib/licenses/python"
+          commit="$(git -C upstream rev-parse HEAD)"
+          COMMIT="$commit" python -c 'import json, os; print(json.dumps({"upstream_repository":"AntaresTechno/Viewer", "upstream_commit":os.environ["COMMIT"], "python_series":"3.12", "runtime":"python-build-standalone"}))' > "$lib/lib.json"
+      - name: Publish platform lib directory
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: lib
+          publish_dir: ${{ runner.temp }}/viewer-lib-publish/lib/${{ matrix.key }}
+          destination_dir: lib/${{ matrix.key }}
+          keep_files: true

@@ -1,6 +1,8 @@
 name: Build Viewer lib dependency branch
 
 on:
+  push:
+    branches-ignore: [web, lib]
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -14,6 +16,10 @@ on:
 
 permissions:
   contents: write
+
+concurrency:
+  group: lib-branch-publication
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -37,7 +43,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $publish = Join-Path $env:RUNNER_TEMP 'viewer-lib-publish'
-          $lib = Join-Path $publish 'lib'
+          $lib = Join-Path $publish 'lib/windows-amd64'
           New-Item -ItemType Directory -Force $lib, (Join-Path $lib 'licenses/python'), (Join-Path $lib 'LICENSES') | Out-Null
           $resolved = python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
           $env:PYTHON_VERSION = $resolved
@@ -60,5 +66,6 @@ jobs:
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: lib
-          publish_dir: ${{ runner.temp }}/viewer-lib-publish
-          force_orphan: true
+          publish_dir: ${{ runner.temp }}/viewer-lib-publish/lib/windows-amd64
+          destination_dir: lib/windows-amd64
+          keep_files: true

@@ -3,25 +3,39 @@ name: Build launcher
 on:
   workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches-ignore: [web, lib]
 
 permissions:
   contents: read
 
 jobs:
   build:
-    runs-on: windows-2025
+    strategy:
+      matrix:
+        include:
+          - runner: windows-2025
+            target: windows-amd64
+          - runner: ubuntu-24.04
+            target: linux-amd64
+          - runner: macos-13
+            target: darwin-amd64
+          - runner: macos-14
+            target: darwin-arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: stable
-      - name: Build Windows launcher
-        shell: pwsh
+      - name: Install Linux GUI build libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev
+      - name: Build native launcher
+        shell: bash
         run: |
           go mod download
-          go build -trimpath -ldflags "-s -w -X main.repository=${{ github.repository }}" -o ViewerLauncher.exe .
+          go build -trimpath -ldflags "-s -w -X main.repository=${{ github.repository }}" -o ViewerLauncher .
       - uses: actions/upload-artifact@v4
         with:
-          name: ViewerLauncher-windows-amd64
-          path: ViewerLauncher.exe
+          name: ViewerLauncher-${{ matrix.target }}
+          path: ViewerLauncher*

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -91,9 +92,6 @@ func unzipBranch(archivePath, destination string) error {
 	defer zr.Close()
 	archiveRoot := ""
 	for _, entry := range zr.File {
-		if entry.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("symbolic link is not permitted in archive: %q", entry.Name)
-		}
 		parts := strings.Split(filepath.ToSlash(entry.Name), "/")
 		if len(parts) < 2 || parts[0] == "" {
 			return fmt.Errorf("unexpected archive entry %q", entry.Name)
@@ -110,6 +108,33 @@ func unzipBranch(archivePath, destination string) error {
 		path := filepath.Join(destination, rel)
 		if entry.FileInfo().IsDir() {
 			if err := os.MkdirAll(path, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if entry.Mode()&os.ModeSymlink != 0 {
+			if runtime.GOOS == "windows" {
+				return fmt.Errorf("symbolic link is not permitted in Windows archive: %q", entry.Name)
+			}
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				return err
+			}
+			in, err := entry.Open()
+			if err != nil {
+				return err
+			}
+			targetBytes, readErr := io.ReadAll(io.LimitReader(in, 4096))
+			in.Close()
+			if readErr != nil {
+				return readErr
+			}
+			target := string(targetBytes)
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(path), target))
+			inside, relErr := filepath.Rel(destination, resolved)
+			if target == "" || strings.Contains(target, "\x00") || filepath.IsAbs(target) || relErr != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("unsafe symbolic link %q -> %q", entry.Name, target)
+			}
+			if err := os.Symlink(target, path); err != nil {
 				return err
 			}
 			continue

@@ -1,6 +1,8 @@
 name: Build Viewer web branch
 
 on:
+  push:
+    branches-ignore: [web, lib]
   workflow_dispatch:
     inputs:
       upstream_ref:

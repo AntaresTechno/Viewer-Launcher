@@ -104,8 +104,9 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 		l.set("无法下载发布物", errors.New("未配置 GitHub 发布仓库"), false)
 		return
 	}
-	if runtime.GOOS != "windows" || runtime.GOARCH != "amd64" {
-		l.set("不支持当前平台", fmt.Errorf("当前仅提供 windows/amd64，实际为 %s/%s", runtime.GOOS, runtime.GOARCH), false)
+	platform, err := platformKey()
+	if err != nil {
+		l.set("不支持当前平台", err, false)
 		return
 	}
 	if l.Snapshot().Running && !refresh {
@@ -117,10 +118,10 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 		l.set("创建数据目录失败", err, false)
 		return
 	}
-	// lib pins the commit that was main when its Windows wheels were built. The
+	// lib pins the commit that was main when its platform wheels were built. The
 	// visible installation order is web -> backend -> Python/dependencies.
 	l.set("正在读取 lib 依赖清单", nil, false)
-	manifest, err := fetchLibManifest(context.Background(), l.Repository())
+	manifest, err := fetchLibManifest(context.Background(), l.Repository(), platform)
 	if err != nil {
 		l.set("读取 lib 依赖清单失败", err, false)
 		return
@@ -141,7 +142,7 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 	}
 	if refresh || !libPresent(l.root) {
 		l.set("正在拉取嵌入式 Python 与依赖包", nil, false)
-		if err := InstallTree(context.Background(), l.root, l.Repository(), "refs/heads/lib", "lib", "lib"); err != nil {
+		if err := InstallTree(context.Background(), l.root, l.Repository(), "refs/heads/lib", "lib/"+platform, "lib"); err != nil {
 			l.set("安装 lib 依赖失败", err, false)
 			return
 		}
@@ -164,11 +165,11 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 	l.OpenBrowser()
 }
 
-func fetchLibManifest(ctx context.Context, repository string) (libManifest, error) {
+func fetchLibManifest(ctx context.Context, repository, platform string) (libManifest, error) {
 	if !validRepository(repository) {
 		return libManifest{}, fmt.Errorf("invalid GitHub repository %q", repository)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://raw.githubusercontent.com/"+repository+"/lib/lib.json", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://raw.githubusercontent.com/"+repository+"/lib/lib/"+platform+"/lib.json", nil)
 	if err != nil {
 		return libManifest{}, err
 	}
@@ -198,13 +199,26 @@ func backendPresent(root string) bool {
 	_, err := os.Stat(filepath.Join(root, "backend", "app", "main.py"))
 	return err == nil
 }
-func libPresent(root string) bool {
-	_, err := os.Stat(filepath.Join(root, "lib", "python", "python.exe"))
-	return err == nil
+func libPresent(root string) bool { _, err := os.Stat(pythonExecutable(root)); return err == nil }
+
+func platformKey() (string, error) {
+	switch runtime.GOOS + "/" + runtime.GOARCH {
+	case "windows/amd64", "linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64":
+		return runtime.GOOS + "-" + runtime.GOARCH, nil
+	default:
+		return "", fmt.Errorf("当前未提供 %s/%s 的 lib 运行时", runtime.GOOS, runtime.GOARCH)
+	}
+}
+
+func pythonExecutable(root string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(root, "lib", "python", "python.exe")
+	}
+	return filepath.Join(root, "lib", "python", "bin", "python3")
 }
 
 func ready(root, expectedCommit string) error {
-	for _, path := range []string{filepath.Join(root, "web", "index.html"), filepath.Join(root, "backend", "app", "main.py"), filepath.Join(root, "lib", "python", "python.exe"), filepath.Join(root, "lib", "licenses", "python-packages.json")} {
+	for _, path := range []string{filepath.Join(root, "web", "index.html"), filepath.Join(root, "backend", "app", "main.py"), pythonExecutable(root), filepath.Join(root, "lib", "licenses", "python-packages.json")} {
 		if _, err := os.Stat(path); err != nil {
 			return fmt.Errorf("required file %s: %w", path, err)
 		}
@@ -227,7 +241,7 @@ func ready(root, expectedCommit string) error {
 
 func (l *Launcher) startBackend() error {
 	pythonRoot := filepath.Join(l.root, "lib", "python")
-	cmd := exec.Command(filepath.Join(pythonRoot, "python.exe"), "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "18081")
+	cmd := exec.Command(pythonExecutable(l.root), "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "18081")
 	cmd.Dir = filepath.Join(l.root, "backend")
 	dataDir := filepath.Join(l.root, "data")
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
@@ -365,7 +379,15 @@ func (l *Launcher) Stop() {
 	l.appendLog("服务已停止")
 }
 func (l *Launcher) OpenBrowser() {
-	if l.Snapshot().Running {
+	if !l.Snapshot().Running {
+		return
+	}
+	switch runtime.GOOS {
+	case "windows":
 		_ = exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", viewerURL).Start()
+	case "darwin":
+		_ = exec.Command("open", viewerURL).Start()
+	default:
+		_ = exec.Command("xdg-open", viewerURL).Start()
 	}
 }
