@@ -1,26 +1,26 @@
 {
   "upstream_repository": "AntaresTechno/Viewer",
-  "upstream_commit": "e147f9b98da5aaedde850557b3d8e55954dea4d9",
+  "upstream_commit": "b11f3a593bcec8512b78cad63198db21c64443ca",
   "python_series": "3.12",
   "runtime": "python-build-standalone",
   "bundle_format": "tar.gz-split-v1",
-  "bundle_sha256": "e214c4d1c940d04d38286e8215e01d46134a5ad507aa338707325bc56014acf8",
-  "bundle_size": 133565665,
+  "bundle_sha256": "5dd877637e82a204cb0ea3963c5bf2db094dab6674aaf491c7ed8275981c352c",
+  "bundle_size": 146218492,
   "parts": [
     {
       "name": "bundle.tar.gz.part-000",
-      "sha256": "6fdf94ecb376aa025ff987fcf13af54d5a899817a09ca370d6a8bca42d87e99e",
+      "sha256": "9d876f494dc63c9280f91459e35e18b837e990f5cd25490c40faed03e5a84f4b",
       "size": 49283072
     },
     {
       "name": "bundle.tar.gz.part-001",
-      "sha256": "0cf35c8a7fd0b8c1ab87e9ddeb78c016b5bb4a096c8d1d99ed8cb819b9f6385c",
+      "sha256": "6d0992b66a9487c16e79e2cf592ef5568b67ca16df264577dbc2d1f215be7236",
       "size": 49283072
     },
     {
       "name": "bundle.tar.gz.part-002",
-      "sha256": "799605d2c79b5ca2b1dcbc49f41c23bad0ebd995c60ab9e87cf0a0a1a0f087d4",
-      "size": 34999521
+      "sha256": "95851bb86f86297b6fc655aeb6c332f4f78ee1a228f659b00a073c34bb1f3df5",
+      "size": 47652348
     }
   ]
 }
