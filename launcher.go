@@ -33,13 +33,24 @@ type State struct {
 	Running                       bool
 }
 type libManifest struct {
-	UpstreamCommit string `json:"upstream_commit"`
+	UpstreamCommit string    `json:"upstream_commit"`
+	BundleFormat   string    `json:"bundle_format"`
+	BundleSHA256   string    `json:"bundle_sha256"`
+	BundleSize     int64     `json:"bundle_size"`
+	Parts          []libPart `json:"parts"`
+}
+
+type libPart struct {
+	Name   string `json:"name"`
+	SHA256 string `json:"sha256"`
+	Size   int64  `json:"size"`
 }
 
 type Launcher struct {
 	root, repository string
 	mu               sync.RWMutex
 	state            State
+	settings         DownloadSettings
 	cmd              *exec.Cmd
 	webServer        *http.Server
 	listener         net.Listener
@@ -47,11 +58,18 @@ type Launcher struct {
 }
 
 func AppRoot() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", fmt.Errorf("locate user configuration directory: %w", err)
+	if override := strings.TrimSpace(os.Getenv("VIEWER_LAUNCHER_ROOT")); override != "" {
+		dir, err := filepath.Abs(override)
+		if err != nil {
+			return "", fmt.Errorf("定位程序目录: %w", err)
+		}
+		return dir, nil
 	}
-	return filepath.Join(dir, "ViewerLauncher"), nil
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("定位启动器目录: %w", err)
+	}
+	return filepath.Join(filepath.Dir(executable), "program"), nil
 }
 
 func NewLauncher(root, compiledRepository string, notify func()) *Launcher {
@@ -59,10 +77,58 @@ func NewLauncher(root, compiledRepository string, notify func()) *Launcher {
 	if repo == "" {
 		repo = compiledRepository
 	}
-	return &Launcher{root: root, repository: repo, notify: notify, state: State{Root: root, URL: viewerURL, Message: "准备就绪"}}
+	settings, settingsErr := loadDownloadSettings(root)
+	if value := strings.TrimSpace(os.Getenv("VIEWER_LAUNCHER_MIRROR")); value != "" {
+		settings.Mirror = value
+	}
+	if value := strings.TrimSpace(os.Getenv("VIEWER_LAUNCHER_PROXY")); value != "" {
+		settings.Proxy = value
+	}
+	state := State{Root: root, URL: viewerURL, Message: "准备就绪"}
+	if settingsErr != nil {
+		state.Message = "下载配置无效：" + settingsErr.Error()
+		state.Err = settingsErr.Error()
+		settings = DownloadSettings{}
+	} else if err := settings.validate(); err != nil {
+		state.Message = "环境变量中的下载配置无效：" + err.Error()
+		state.Err = err.Error()
+		settings = DownloadSettings{}
+	}
+	return &Launcher{root: root, repository: repo, notify: notify, settings: settings, state: state}
 }
 func (l *Launcher) Repository() string { return l.repository }
 func (l *Launcher) Snapshot() State    { l.mu.RLock(); defer l.mu.RUnlock(); return l.state }
+func (l *Launcher) DownloadSettings() DownloadSettings {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.settings
+}
+
+func (l *Launcher) ConfigureDownloads(mirror, proxy string) error {
+	settings := DownloadSettings{Mirror: mirror, Proxy: proxy}.normalized()
+	if err := saveDownloadSettings(l.root, settings); err != nil {
+		l.mu.Lock()
+		l.state.Message, l.state.Err = "保存下载配置失败："+err.Error(), err.Error()
+		l.mu.Unlock()
+		l.notifyUI()
+		return err
+	}
+	l.mu.Lock()
+	l.settings = settings
+	l.state.Message, l.state.Err = "下载配置已保存，下次安装或更新时生效", ""
+	l.mu.Unlock()
+	if settings.Mirror != "" {
+		l.appendLog("已启用 GitHub 下载镜像")
+	} else {
+		l.appendLog("GitHub 下载镜像已关闭")
+	}
+	if settings.Proxy != "" {
+		l.appendLog("已启用下载代理：" + redactedProxy(settings.Proxy))
+	} else {
+		l.appendLog("显式下载代理已关闭（仍遵循系统代理环境变量）")
+	}
+	return nil
+}
 func (l *Launcher) notifyUI() {
 	if l.notify != nil {
 		l.notify()
@@ -118,32 +184,51 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 		l.set("创建数据目录失败", err, false)
 		return
 	}
+	settings := l.DownloadSettings()
+	client, err := settings.client()
+	if err != nil {
+		l.set("创建下载客户端失败", err, false)
+		return
+	}
+	if settings.Mirror != "" {
+		l.appendLog("本次下载使用 GitHub 镜像")
+	}
+	if settings.Proxy != "" {
+		l.appendLog("本次下载使用代理：" + redactedProxy(settings.Proxy))
+	}
 	// lib pins the commit that was main when its platform wheels were built. The
 	// visible installation order is web -> backend -> Python/dependencies.
 	l.set("正在读取 lib 依赖清单", nil, false)
-	manifest, err := fetchLibManifest(context.Background(), l.Repository(), platform)
+	manifest, err := fetchLibManifest(context.Background(), client, settings, l.Repository(), platform)
 	if err != nil {
 		l.set("读取 lib 依赖清单失败", err, false)
 		return
 	}
 	if refresh || !webPresent(l.root) {
 		l.set("正在拉取 web 前端", nil, false)
-		if err := InstallTree(context.Background(), l.root, l.Repository(), "refs/heads/web", "web", "web"); err != nil {
+		if err := InstallTree(context.Background(), client, settings, l.root, l.Repository(), "refs/heads/web", "web", "web"); err != nil {
 			l.set("安装 web 前端失败", err, false)
 			return
 		}
 	}
 	if refresh || !backendPresent(l.root) {
 		l.set("正在从 Viewer main 对应提交拉取后端", nil, false)
-		if err := InstallTree(context.Background(), l.root, upstream, manifest.UpstreamCommit, "backend", "backend"); err != nil {
+		if err := InstallTree(context.Background(), client, settings, l.root, upstream, manifest.UpstreamCommit, "backend", "backend"); err != nil {
 			l.set("安装 Viewer 后端失败", err, false)
 			return
 		}
 	}
 	if refresh || !libPresent(l.root) {
 		l.set("正在拉取嵌入式 Python 与依赖包", nil, false)
-		if err := InstallTree(context.Background(), l.root, l.Repository(), "refs/heads/lib", "lib/"+platform, "lib"); err != nil {
-			l.set("安装 lib 依赖失败", err, false)
+		var installErr error
+		if manifest.usesSplitBundle() {
+			installErr = InstallSplitLib(context.Background(), client, settings, l.root, l.Repository(), platform, manifest)
+		} else {
+			l.appendLog("检测到旧版完整 lib，使用兼容下载方式")
+			installErr = InstallTree(context.Background(), client, settings, l.root, l.Repository(), "refs/heads/lib", "lib/"+platform, "lib")
+		}
+		if installErr != nil {
+			l.set("安装 lib 依赖失败", installErr, false)
 			return
 		}
 	}
@@ -165,15 +250,16 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 	l.OpenBrowser()
 }
 
-func fetchLibManifest(ctx context.Context, repository, platform string) (libManifest, error) {
+func fetchLibManifest(ctx context.Context, client *http.Client, settings DownloadSettings, repository, platform string) (libManifest, error) {
 	if !validRepository(repository) {
 		return libManifest{}, fmt.Errorf("invalid GitHub repository %q", repository)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://raw.githubusercontent.com/"+repository+"/lib/lib/"+platform+"/lib.json", nil)
+	manifestURL := settings.rewrite("https://raw.githubusercontent.com/" + repository + "/lib/lib/" + platform + "/lib.json")
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
 	if err != nil {
 		return libManifest{}, err
 	}
-	response, err := (&http.Client{Timeout: 30 * time.Second}).Do(request)
+	response, err := client.Do(request)
 	if err != nil {
 		return libManifest{}, err
 	}
@@ -187,6 +273,11 @@ func fetchLibManifest(ctx context.Context, repository, platform string) (libMani
 	}
 	if !commitHash.MatchString(manifest.UpstreamCommit) {
 		return libManifest{}, errors.New("lib.json has no immutable 40-character upstream_commit")
+	}
+	if manifest.hasBundleMetadata() {
+		if err := manifest.validateBundle(); err != nil {
+			return libManifest{}, err
+		}
 	}
 	return manifest, nil
 }

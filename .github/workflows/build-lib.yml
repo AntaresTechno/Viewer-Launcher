@@ -179,12 +179,55 @@ jobs:
           set -euo pipefail
           root="${{ runner.temp }}/viewer-lib/lib"
           mkdir -p "$root"
-          for archive in "${{ runner.temp }}"/viewer-lib/archives/*.tar.gz; do
-            tar -xzf "$archive" -C "$root"
-          done
           for key in windows-amd64 linux-amd64 linux-arm64; do
-            if [[ ! -f "$root/$key/lib.json" ]]; then
-              echo "Missing bundle manifest: $root/$key/lib.json" >&2
+            archive="${{ runner.temp }}/viewer-lib/archives/viewer-lib-$key.tar.gz"
+            if [[ ! -f "$archive" ]]; then
+              echo "Missing platform archive: $archive" >&2
+              exit 1
+            fi
+            source_manifest="${{ runner.temp }}/viewer-lib/$key.lib.json"
+            if ! tar -xOf "$archive" "$key/lib.json" > "$source_manifest"; then
+              echo "Missing bundle manifest in $archive" >&2
+              exit 1
+            fi
+            output="$root/$key"
+            mkdir -p "$output"
+            # GitHub rejects blobs at or above 100 MB and warns above 50 MB.
+            # 47 MiB leaves room below both thresholds while keeping part counts modest.
+            split --bytes=47M --numeric-suffixes=0 --suffix-length=3 "$archive" "$output/bundle.tar.gz.part-"
+            python - "$source_manifest" "$output/lib.json" "$archive" "$output" <<'PY'
+          import hashlib
+          import json
+          import pathlib
+          import sys
+
+          source, destination, archive, output = map(pathlib.Path, sys.argv[1:])
+          manifest = json.loads(source.read_text(encoding="utf-8-sig"))
+
+          def checksum(file):
+              digest = hashlib.sha256()
+              with file.open("rb") as stream:
+                  for block in iter(lambda: stream.read(1024 * 1024), b""):
+                      digest.update(block)
+              return digest.hexdigest()
+
+          parts = []
+          for part in sorted(output.glob("bundle.tar.gz.part-*")):
+              parts.append({
+                  "name": part.name,
+                  "sha256": checksum(part),
+                  "size": part.stat().st_size,
+              })
+          manifest.update({
+              "bundle_format": "tar.gz-split-v1",
+              "bundle_sha256": checksum(archive),
+              "bundle_size": archive.stat().st_size,
+              "parts": parts,
+          })
+          destination.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+          PY
+            if [[ ! -s "$output/lib.json" ]] || ! compgen -G "$output/bundle.tar.gz.part-*" > /dev/null; then
+              echo "Failed to prepare split bundle for $key" >&2
               exit 1
             fi
           done
@@ -195,4 +238,6 @@ jobs:
           publish_branch: lib
           publish_dir: ${{ runner.temp }}/viewer-lib/lib
           destination_dir: lib
-          keep_files: true
+          # The lib branch is wholly generated. Do not retain parts from an older
+          # bundle when a new bundle happens to have fewer parts.
+          keep_files: false

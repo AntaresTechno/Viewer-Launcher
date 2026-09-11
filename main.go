@@ -23,11 +23,14 @@ import (
 var repository = ""
 
 type launcherUI struct {
-	launcher *Launcher
-	start    widget.Clickable
-	stop     widget.Clickable
-	open     widget.Clickable
-	update   widget.Clickable
+	launcher    *Launcher
+	start       widget.Clickable
+	stop        widget.Clickable
+	open        widget.Clickable
+	update      widget.Clickable
+	saveNetwork widget.Clickable
+	mirror      widget.Editor
+	proxy       widget.Editor
 }
 
 func main() {
@@ -35,7 +38,7 @@ func main() {
 		window := new(app.Window)
 		window.Option(
 			app.Title("Viewer Launcher"),
-			app.Size(unit.Dp(680), unit.Dp(620)),
+			app.Size(unit.Dp(720), unit.Dp(760)),
 		)
 		if err := run(window); err != nil {
 			log.Printf("launcher stopped: %v", err)
@@ -51,6 +54,12 @@ func run(window *app.Window) error {
 		return err
 	}
 	ui := launcherUI{launcher: NewLauncher(root, repository, window.Invalidate)}
+	settings := ui.launcher.DownloadSettings()
+	ui.mirror.SingleLine = true
+	ui.mirror.SetText(settings.Mirror)
+	ui.proxy.SingleLine = true
+	ui.proxy.Mask = '•'
+	ui.proxy.SetText(settings.Proxy)
 	th := material.NewTheme()
 	th.Shaper = textShaper()
 	for {
@@ -84,6 +93,9 @@ func (ui *launcherUI) layout(gtx layout.Context, th *material.Theme) {
 	for ui.open.Clicked(gtx) {
 		go ui.launcher.OpenBrowser()
 	}
+	for ui.saveNetwork.Clicked(gtx) {
+		_ = ui.launcher.ConfigureDownloads(ui.mirror.Text(), ui.proxy.Text())
+	}
 
 	state := ui.launcher.Snapshot()
 	statusColor := color.NRGBA{R: 67, G: 160, B: 71, A: 255}
@@ -104,9 +116,19 @@ func (ui *launcherUI) layout(gtx layout.Context, th *material.Theme) {
 				return label.Layout(gtx)
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
-			layout.Rigid(material.Body2(th, "数据目录："+state.Root).Layout),
+			layout.Rigid(material.Body2(th, "程序目录："+state.Root).Layout),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(4)}.Layout),
 			layout.Rigid(material.Body2(th, "服务地址："+state.URL).Layout),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(14)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return networkEditor(gtx, th, "GitHub 镜像前缀（留空直连）", "例：https://gh-proxy.example/ 或 https://example/{url}", &ui.mirror)
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+				return networkEditor(gtx, th, "下载代理（留空使用系统代理）", "http://、https:// 或 socks5://", &ui.proxy)
+			}),
+			layout.Rigid(layout.Spacer{Height: unit.Dp(8)}.Layout),
+			layout.Rigid(material.Button(th, &ui.saveNetwork, "保存镜像/代理设置").Layout),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(24)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
 				return layout.Flex{Spacing: layout.SpaceBetween}.Layout(gtx,
@@ -139,6 +161,19 @@ func (ui *launcherUI) layout(gtx layout.Context, th *material.Theme) {
 			}),
 		)
 	})
+}
+
+func networkEditor(gtx layout.Context, th *material.Theme, label, hint string, editor *widget.Editor) layout.Dimensions {
+	return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+		layout.Rigid(material.Caption(th, label).Layout),
+		layout.Rigid(layout.Spacer{Height: unit.Dp(3)}.Layout),
+		layout.Rigid(func(gtx layout.Context) layout.Dimensions {
+			border := widget.Border{Color: color.NRGBA{R: 170, G: 170, B: 170, A: 255}, CornerRadius: unit.Dp(4), Width: unit.Dp(1)}
+			return border.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
+				return layout.UniformInset(unit.Dp(8)).Layout(gtx, material.Editor(th, editor, hint).Layout)
+			})
+		}),
+	)
 }
 
 func tailLines(value string, limit int) string {

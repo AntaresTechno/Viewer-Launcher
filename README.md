@@ -1,18 +1,26 @@
 # Viewer Launcher
 
 一个 Windows、Linux 的 Go + Gio 原生启动器。它以 Go HTTP 服务承载 Viewer 前端，反向代理 API 到隔离的 CPython 后端。
-浏览器和 Python 均只绑定本机回环地址；SQLite 数据位于用户配置目录，不会随更新被覆盖。
+浏览器和 Python 均只绑定本机回环地址；程序、SQLite 数据、设置和日志统一位于启动器同级的 `./program`，数据不会随组件更新被覆盖。开发时可通过 `VIEWER_LAUNCHER_ROOT` 覆盖该目录。
 
 ## 发布结构
 
 | 分支 | 工作流 | 内容 |
 | --- | --- | --- |
 | `web` | `Build Viewer web branch` | 上游编译后的 `dist`、上游提交号和 GPL 文本 |
-| `lib` | `Build Viewer lib` | 默认最新 CPython 3.12 嵌入式包、平台 wheels、许可证清单 |
+| `lib` | `Build Viewer lib` | 默认最新 CPython 3.12 嵌入式包、平台 wheels、许可证清单，以及每个平台运行时的压缩分片 |
 
-安装逻辑为：读取 `lib` 的提交清单 → 拉取 `web` → 从 Viewer `main` 当时对应的不可变 commit 拉取 `backend` → 拉取 `lib` → 核验前端、后端、Python 及三个提交号。归档解压拒绝绝对路径、`..` 和不安全符号链接；Linux 仅允许指向安装目录内的相对符号链接，以保留 CPython 运行时布局。更新以暂存目录下载并以目录重命名切换。
+安装逻辑为：读取 `lib` 的提交清单 → 拉取 `web` → 从 Viewer `main` 当时对应的不可变 commit 拉取 `backend` → 下载当前平台 `lib` 的压缩分片并逐片校验 SHA-256 → 合并解压运行时 → 核验前端、后端、Python 及三个提交号。归档解压拒绝绝对路径、`..` 和不安全符号链接；Linux 仅允许指向安装目录内的相对符号链接，以保留 CPython 运行时布局。更新以暂存目录下载并以目录重命名切换。
 
-启动逻辑为：嵌入式 Python 在 `127.0.0.1:18081` 运行 Uvicorn；Go 在 `127.0.0.1:18080` 提供 `web` 中的 `dist` 文件，将 `/api` 与 `/dav` 反向代理至 Python，并负责 SPA 回退。窗口显示 Go、代理、Python/Uvicorn 日志最近 8 行，完整日志保存在 `logs/launcher.log`。
+启动逻辑为：嵌入式 Python 在 `127.0.0.1:18081` 运行 Uvicorn；Go 在 `127.0.0.1:18080` 提供 `web` 中的 `dist` 文件，将 `/api` 与 `/dav` 反向代理至 Python，并负责 SPA 回退。窗口显示 Go、代理、Python/Uvicorn 日志最近 8 行，完整日志保存在 `./program/logs/launcher.log`。
+
+## 下载镜像与代理
+
+启动器窗口可设置 GitHub 镜像前缀和下载代理，配置保存在 `./program/settings.json`：
+
+- 镜像前缀留空时直连 GitHub；填写 `https://mirror.example/` 时，下载地址会改写为 `https://mirror.example/https://原始地址`。也可使用 `https://mirror.example/{url}` 模板。
+- 显式代理支持 `http://`、`https://` 和 `socks5://`。留空时仍遵循系统的 `HTTP_PROXY`、`HTTPS_PROXY` 和 `NO_PROXY` 环境变量。
+- 可用 `VIEWER_LAUNCHER_MIRROR`、`VIEWER_LAUNCHER_PROXY` 临时覆盖配置文件。代理账号不会写入日志，但包含口令的代理 URL 会保存在本地设置文件中。
 
 ## 初次配置
 
@@ -36,7 +44,7 @@ go build -ldflags "-X main.repository=OWNER/REPOSITORY" -o ViewerLauncher .
 
 - 将上游 LICENSE 和被构建的 commit 写入发布物；
 - 固定 CPython 版本，保留其许可证；
-- 用 `pip download --only-binary=:all:` 先解析目标平台 wheels，再离线安装；
+- Windows 下载目标平台 wheels；Linux 在对应架构的 manylinux2014 环境中补充构建缺失的 wheels，再离线安装；
 - 解析每个 wheel 的 `METADATA`，把许可证清单和能找到的许可证文件放入运行时；
 - 不对 Python 依赖做许可证策略校验；缺少机器可读许可证字段只会在清单中显示为空，不会阻断构建。
 
