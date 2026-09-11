@@ -8,7 +8,7 @@
 | 分支 | 工作流 | 内容 |
 | --- | --- | --- |
 | `web` | `Build Viewer web branch` | 上游编译后的 `dist`、上游提交号和 GPL 文本 |
-| `lib` | `Build Viewer lib dependency branch`、`Build Viewer lib for Linux` | 默认最新 CPython 3.12 嵌入式包、平台 wheels、许可证报告 |
+| `lib` | `Build Viewer lib` | 默认最新 CPython 3.12 嵌入式包、平台 wheels、许可证报告 |
 
 安装逻辑为：读取 `lib` 的提交清单 → 拉取 `web` → 从 Viewer `main` 当时对应的不可变 commit 拉取 `backend` → 拉取 `lib` → 核验前端、后端、Python、依赖许可证报告及三个提交号。归档解压拒绝绝对路径、`..` 和不安全符号链接；Linux 仅允许指向安装目录内的相对符号链接，以保留 CPython 运行时布局。更新以暂存目录下载并以目录重命名切换。
 

@@ -1,0 +1,172 @@
+name: Build Viewer lib
+
+on:
+  push:
+    branches-ignore: [web, lib]
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Viewer tag, branch, or immutable commit SHA
+        required: true
+        default: main
+      python_version:
+        description: CPython 3.12 series to package
+        required: true
+        default: "3.12"
+
+permissions:
+  contents: write
+
+# A new source commit should supersede an older, still-running dependency build.
+concurrency:
+  group: build-viewer-lib-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  resolve-upstream:
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.commit.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ inputs.upstream_ref || 'main' }}
+          path: upstream
+          fetch-depth: 1
+      - id: commit
+        shell: bash
+        run: echo "value=$(git -C upstream rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-windows:
+    needs: resolve-upstream
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ needs.resolve-upstream.outputs.commit }}
+          path: upstream
+          fetch-depth: 1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version || '3.12' }}
+          architecture: x64
+      - name: Create CPython embedded dependency bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $lib = Join-Path $env:RUNNER_TEMP 'viewer-lib/windows-amd64'
+          New-Item -ItemType Directory -Force $lib, (Join-Path $lib 'licenses/python'), (Join-Path $lib 'LICENSES') | Out-Null
+          $version = python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+          $zip = Join-Path $env:RUNNER_TEMP "python-$version-embed-amd64.zip"
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$version/python-$version-embed-amd64.zip" -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $lib 'python') -Force
+          $pth = Get-ChildItem (Join-Path $lib 'python') -Filter 'python*._pth' | Select-Object -First 1
+          (Get-Content -LiteralPath $pth.FullName) -replace '^#import site$', "Lib/site-packages`n../../backend`nimport site" | Set-Content -LiteralPath $pth.FullName -Encoding ascii
+          python -m pip install --upgrade pip
+          $wheels = Join-Path $env:RUNNER_TEMP 'wheels'
+          python -m pip download --only-binary=:all: --dest $wheels -r upstream/backend/requirements.txt
+          python -m pip install --no-index --find-links $wheels --target (Join-Path $lib 'python/Lib/site-packages') -r upstream/backend/requirements.txt
+          Copy-Item upstream/LICENSE (Join-Path $lib 'LICENSES/Viewer-GPL-3.0-or-later.txt') -Force
+          Copy-Item (Join-Path $lib 'python/LICENSE.txt') (Join-Path $lib 'LICENSES/CPython.txt') -Force
+          python tools/license_check.py --site-packages (Join-Path $lib 'python/Lib/site-packages') --policy licenses-policy.json --report (Join-Path $lib 'licenses/python-packages.json') --notices-dir (Join-Path $lib 'licenses/python')
+          @{ upstream_repository = 'AntaresTechno/Viewer'; upstream_commit = '${{ needs.resolve-upstream.outputs.commit }}'; python_version = $version; built_at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $lib 'lib.json') -Encoding utf8
+      - uses: actions/upload-artifact@v6
+        with:
+          name: viewer-lib-windows-amd64
+          path: ${{ runner.temp }}/viewer-lib/windows-amd64
+          if-no-files-found: error
+
+  build-linux:
+    needs: resolve-upstream
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - key: linux-amd64
+            pbs_suffix: x86_64-unknown-linux-gnu
+            pip_platform: manylinux_2_17_x86_64
+          - key: linux-arm64
+            pbs_suffix: aarch64-unknown-linux-gnu
+            pip_platform: manylinux_2_17_aarch64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ needs.resolve-upstream.outputs.commit }}
+          path: upstream
+          fetch-depth: 1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Build portable lib directory
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM_KEY: ${{ matrix.key }}
+          PBS_SUFFIX: ${{ matrix.pbs_suffix }}
+          PIP_PLATFORM: ${{ matrix.pip_platform }}
+        run: |
+          set -euo pipefail
+          lib="$RUNNER_TEMP/viewer-lib/$PLATFORM_KEY"
+          mkdir -p "$lib/licenses/python" "$lib/LICENSES" "$RUNNER_TEMP/wheels" "$RUNNER_TEMP/pbs"
+          asset="$(gh api repos/astral-sh/python-build-standalone/releases/latest --jq '.assets[].name' | grep "^cpython-3\\.12.*${PBS_SUFFIX}-install_only\\.tar\\.gz$" | head -n 1)"
+          test -n "$asset"
+          gh release download --repo astral-sh/python-build-standalone --pattern "$asset" --dir "$RUNNER_TEMP/pbs"
+          tar -xzf "$RUNNER_TEMP/pbs/$asset" -C "$RUNNER_TEMP/pbs"
+          prefix="$(dirname "$(dirname "$(find "$RUNNER_TEMP/pbs" -type f -path '*/bin/python3' -print -quit)")")"
+          test -x "$prefix/bin/python3"
+          mv "$prefix" "$lib/python"
+          stdlib="$(find "$lib/python/lib" -mindepth 1 -maxdepth 1 -type d -name 'python3.12' -print -quit)"
+          test -n "$stdlib"
+          site_packages="$stdlib/site-packages"
+          mkdir -p "$site_packages"
+          python -m pip download --only-binary=:all: --platform "$PIP_PLATFORM" --implementation cp --python-version 312 --abi cp312 --dest "$RUNNER_TEMP/wheels" -r upstream/backend/requirements.txt
+          python tools/install_wheels.py --wheels "$RUNNER_TEMP/wheels" --target "$site_packages"
+          cp upstream/LICENSE "$lib/LICENSES/Viewer-GPL-3.0-or-later.txt"
+          python_license="$(find "$lib/python" -maxdepth 3 -type f -iname 'LICENSE*' -print -quit)"
+          test -n "$python_license"
+          cp "$python_license" "$lib/LICENSES/CPython.txt"
+          python tools/license_check.py --site-packages "$site_packages" --policy licenses-policy.json --report "$lib/licenses/python-packages.json" --notices-dir "$lib/licenses/python"
+          COMMIT='${{ needs.resolve-upstream.outputs.commit }}' python -c 'import json, os; print(json.dumps({"upstream_repository":"AntaresTechno/Viewer", "upstream_commit":os.environ["COMMIT"], "python_series":"3.12", "runtime":"python-build-standalone"}))' > "$lib/lib.json"
+      - uses: actions/upload-artifact@v6
+        with:
+          name: viewer-lib-${{ matrix.key }}
+          path: ${{ runner.temp }}/viewer-lib/${{ matrix.key }}
+          if-no-files-found: error
+
+  publish:
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: viewer-lib-*
+          path: ${{ runner.temp }}/viewer-lib/lib
+          merge-multiple: false
+      - name: Assemble lib branch layout
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="${{ runner.temp }}/viewer-lib/lib"
+          mkdir -p "$root/windows-amd64" "$root/linux-amd64" "$root/linux-arm64"
+          for key in windows-amd64 linux-amd64 linux-arm64; do
+            source="$root/viewer-lib-$key"
+            test -d "$source"
+            mv "$source"/* "$root/$key/"
+            rmdir "$source"
+            test -f "$root/$key/lib.json"
+          done
+      - name: Publish all platform bundles atomically
+        uses: peaceiris/actions-gh-pages@v4.1.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: lib
+          publish_dir: ${{ runner.temp }}/viewer-lib/lib
+          destination_dir: lib
+          keep_files: true
