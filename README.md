@@ -18,7 +18,7 @@
 
 1. 将此仓库推送到 GitHub，并在仓库 Settings → Actions → General 中允许 workflow 对 `GITHUB_TOKEN` 读写。
 2. 确认 `web` 和 `lib` 没有分支保护规则阻止 Actions 推送。
-3. 除自动生成的 `web`、`lib` 分支外，每次 push 都会自动运行 web、Windows lib、Linux lib 和启动器构建。两个写入 `lib` 分支的工作流由共享并发锁串行执行，不会覆盖彼此的平台目录。若需固定某个 Viewer 版本，可手动 dispatch 并填入上游 commit SHA；web 与各 lib 发布应使用同一 SHA。
+3. 除自动生成的 `web`、`lib` 分支外，每次 push 都会自动运行 web、Windows lib 和启动器构建；Windows lib 成功发布后会自动触发 Linux lib。Linux 工作流读取 Windows lib 清单中的上游 commit，因此两套依赖始终对应同一 Viewer 版本，也不会竞争 `lib` 分支的等待队列。若需固定某个 Viewer 版本，可手动 dispatch 并填入上游 commit SHA。
    启动器会读取两侧元数据并拒绝不匹配的组合。
 4. 构建启动器时嵌入你的 GitHub 仓库名：
 

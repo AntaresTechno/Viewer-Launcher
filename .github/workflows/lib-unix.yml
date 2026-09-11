@@ -1,8 +1,9 @@
 name: Build Viewer lib for Linux
 
 on:
-  push:
-    branches-ignore: [web, lib]
+  workflow_run:
+    workflows: ["Build Viewer lib dependency branch"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       upstream_ref:
@@ -13,12 +14,9 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: lib-branch-publication
-  cancel-in-progress: false
-
 jobs:
   build:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     strategy:
       fail-fast: false
       max-parallel: 1
@@ -35,12 +33,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
       - uses: actions/checkout@v6
         with:
           repository: AntaresTechno/Viewer
-          ref: ${{ inputs.upstream_ref || 'main' }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.upstream_ref || 'main' }}
           path: upstream
-          fetch-depth: 1
+          fetch-depth: 0
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -48,11 +48,16 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          LAUNCHER_REPOSITORY: ${{ github.repository }}
           PLATFORM_KEY: ${{ matrix.key }}
           PBS_SUFFIX: ${{ matrix.pbs_suffix }}
           PIP_PLATFORM: ${{ matrix.pip_platform }}
         run: |
           set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_run" ]; then
+            commit="$(curl --fail --retry 3 --silent --show-error "https://raw.githubusercontent.com/$LAUNCHER_REPOSITORY/lib/lib/windows-amd64/lib.json" | python -c 'import json, sys; print(json.load(sys.stdin)["upstream_commit"])')"
+            git -C upstream checkout --detach "$commit"
+          fi
           publish="$RUNNER_TEMP/viewer-lib-publish"
           lib="$publish/lib/$PLATFORM_KEY"
           mkdir -p "$lib/licenses/python" "$lib/LICENSES" "$RUNNER_TEMP/wheels" "$RUNNER_TEMP/pbs"
