@@ -203,7 +203,7 @@ func libPresent(root string) bool { _, err := os.Stat(pythonExecutable(root)); r
 
 func platformKey() (string, error) {
 	switch runtime.GOOS + "/" + runtime.GOARCH {
-	case "windows/amd64", "linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64":
+	case "windows/amd64", "linux/amd64", "linux/arm64":
 		return runtime.GOOS + "-" + runtime.GOARCH, nil
 	default:
 		return "", fmt.Errorf("当前未提供 %s/%s 的 lib 运行时", runtime.GOOS, runtime.GOARCH)
@@ -385,8 +385,6 @@ func (l *Launcher) OpenBrowser() {
 	switch runtime.GOOS {
 	case "windows":
 		_ = exec.Command("rundll32.exe", "url.dll,FileProtocolHandler", viewerURL).Start()
-	case "darwin":
-		_ = exec.Command("open", viewerURL).Start()
 	default:
 		_ = exec.Command("xdg-open", viewerURL).Start()
 	}

@@ -8,6 +8,6 @@ and third-party Python notices.
 
 The launcher build itself is released under GPL-3.0-or-later so that a
 distributed combined package can be conveyed under terms compatible with the
-upstream application. Before publishing, run the relevant Windows or Linux/macOS
+upstream application. Before publishing, run the relevant Windows or Linux
 `lib` workflow; it rejects an unrecognised Python dependency licence and records
 the resolved package set under `lib/licenses/`.

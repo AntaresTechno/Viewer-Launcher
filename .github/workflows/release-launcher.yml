@@ -18,10 +18,6 @@ jobs:
             target: windows-amd64
           - runner: ubuntu-24.04
             target: linux-amd64
-          - runner: macos-13
-            target: darwin-amd64
-          - runner: macos-14
-            target: darwin-arm64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
