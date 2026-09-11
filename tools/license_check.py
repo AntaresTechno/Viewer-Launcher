@@ -54,7 +54,15 @@ def main() -> int:
         entries.append({"name": name, "version": version, "license": licence, "permitted": permitted})
         if not permitted:
             failures.append(f"{name} {version}: {licence or 'no machine-readable licence'}")
-        files = list(info.glob("LICENSE*")) + list(info.glob("COPYING*"))
+        # Wheel metadata may contain a ``licenses/`` directory.  ``Path.glob``
+        # also returns directories, while ``shutil.copyfile`` accepts only
+        # regular files (notably aiosqlite uses that directory layout).
+        files = [
+            path
+            for pattern in ("LICENSE*", "COPYING*")
+            for path in info.glob(pattern)
+            if path.is_file()
+        ]
         license_dir = info / "licenses"
         if license_dir.exists():
             files.extend(path for path in license_dir.rglob("*") if path.is_file())
