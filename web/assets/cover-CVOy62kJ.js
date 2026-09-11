@@ -1,0 +1,1 @@
+import{J as s}from"./index-RAH3Attl.js";const o="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='90' height='120'><rect width='100%25' height='100%25' rx='8' fill='%239aa7b8'/></svg>";function c(e,t){const r=e.target;if(r.dataset.coverFb){r.onerror=null,r.src=o;return}r.dataset.coverFb="1",r.src=t?s(t):o}export{o as F,c as o};

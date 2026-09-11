@@ -1,0 +1,1 @@
+function e(s){return s?s.split(/[,，;；、\n\r]+/).map(r=>r.trim()).filter(Boolean):[]}function n(s){const r=new Map;for(const t of s)for(const o of e(t.sourceGroup))r.set(o,(r.get(o)??0)+1);return[...r.entries()].sort((t,o)=>o[1]-t[1]||t[0].localeCompare(o[0],"zh")).map(([t,o])=>({name:t,count:o}))}export{n as c,e as s};
