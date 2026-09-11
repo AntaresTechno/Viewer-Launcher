@@ -73,10 +73,13 @@ jobs:
           Copy-Item (Join-Path $lib 'python/LICENSE.txt') (Join-Path $lib 'LICENSES/CPython.txt') -Force
           python tools/collect_licenses.py --site-packages (Join-Path $lib 'python/Lib/site-packages') --report (Join-Path $lib 'licenses/python-packages.json') --notices-dir (Join-Path $lib 'licenses/python')
           @{ upstream_repository = 'AntaresTechno/Viewer'; upstream_commit = '${{ needs.resolve-upstream.outputs.commit }}'; python_version = $version; built_at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $lib 'lib.json') -Encoding utf8
+          & (Join-Path $lib 'python/python.exe') -c "import fastapi, quickjs, uvicorn"
+          tar.exe -czf (Join-Path $env:RUNNER_TEMP 'viewer-lib-windows-amd64.tar.gz') -C (Join-Path $env:RUNNER_TEMP 'viewer-lib') windows-amd64
+          if ($LASTEXITCODE -ne 0) { throw "Failed to archive Windows dependency bundle" }
       - uses: actions/upload-artifact@v6
         with:
           name: viewer-lib-windows-amd64
-          path: ${{ runner.temp }}/viewer-lib/windows-amd64
+          path: ${{ runner.temp }}/viewer-lib-windows-amd64.tar.gz
           if-no-files-found: error
 
   build-linux:
@@ -86,13 +89,15 @@ jobs:
       max-parallel: 2
       matrix:
         include:
-          - key: linux-amd64
+          - runner: ubuntu-24.04
+            key: linux-amd64
             pbs_suffix: x86_64-unknown-linux-gnu
-            pip_platform: manylinux_2_17_x86_64
-          - key: linux-arm64
+            manylinux_image: quay.io/pypa/manylinux2014_x86_64
+          - runner: ubuntu-24.04-arm
+            key: linux-arm64
             pbs_suffix: aarch64-unknown-linux-gnu
-            pip_platform: manylinux_2_17_aarch64
-    runs-on: ubuntu-24.04
+            manylinux_image: quay.io/pypa/manylinux2014_aarch64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/checkout@v6
@@ -110,34 +115,53 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PLATFORM_KEY: ${{ matrix.key }}
           PBS_SUFFIX: ${{ matrix.pbs_suffix }}
-          PIP_PLATFORM: ${{ matrix.pip_platform }}
+          MANYLINUX_IMAGE: ${{ matrix.manylinux_image }}
         run: |
           set -euo pipefail
           lib="$RUNNER_TEMP/viewer-lib/$PLATFORM_KEY"
           mkdir -p "$lib/licenses/python" "$lib/LICENSES" "$RUNNER_TEMP/wheels" "$RUNNER_TEMP/pbs"
-          asset="$(gh api repos/astral-sh/python-build-standalone/releases/latest --jq '.assets[].name' | grep "^cpython-3\\.12.*${PBS_SUFFIX}-install_only\\.tar\\.gz$" | head -n 1)"
-          test -n "$asset"
+          asset="$(gh api repos/astral-sh/python-build-standalone/releases/latest --jq '.assets[].name' | grep "^cpython-3\\.12.*${PBS_SUFFIX}-install_only\\.tar\\.gz$" | head -n 1 || true)"
+          if [[ -z "$asset" ]]; then
+            echo "No CPython 3.12 install_only asset found for $PBS_SUFFIX" >&2
+            exit 1
+          fi
           gh release download --repo astral-sh/python-build-standalone --pattern "$asset" --dir "$RUNNER_TEMP/pbs"
           tar -xzf "$RUNNER_TEMP/pbs/$asset" -C "$RUNNER_TEMP/pbs"
-          prefix="$(dirname "$(dirname "$(find "$RUNNER_TEMP/pbs" -type f -path '*/bin/python3' -print -quit)")")"
-          test -x "$prefix/bin/python3"
+          prefix="$RUNNER_TEMP/pbs/python"
+          if [[ ! -x "$prefix/bin/python3" ]]; then
+            echo "Embedded Python executable is missing: $prefix/bin/python3" >&2
+            find "$RUNNER_TEMP/pbs" -maxdepth 3 -print >&2
+            exit 1
+          fi
           mv "$prefix" "$lib/python"
           stdlib="$(find "$lib/python/lib" -mindepth 1 -maxdepth 1 -type d -name 'python3.12' -print -quit)"
-          test -n "$stdlib"
+          if [[ -z "$stdlib" ]]; then
+            echo "CPython 3.12 standard library directory was not found" >&2
+            exit 1
+          fi
           site_packages="$stdlib/site-packages"
           mkdir -p "$site_packages"
-          python -m pip download --only-binary=:all: --platform "$PIP_PLATFORM" --implementation cp --python-version 312 --abi cp312 --dest "$RUNNER_TEMP/wheels" -r upstream/backend/requirements.txt
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/upstream/backend:/viewer-backend:ro" \
+            -v "$RUNNER_TEMP/wheels:/wheels" \
+            "$MANYLINUX_IMAGE" \
+            /opt/python/cp312-cp312/bin/pip wheel --wheel-dir /wheels -r /viewer-backend/requirements.txt
           python tools/install_wheels.py --wheels "$RUNNER_TEMP/wheels" --target "$site_packages"
           cp upstream/LICENSE "$lib/LICENSES/Viewer-GPL-3.0-or-later.txt"
           python_license="$(find "$lib/python" -maxdepth 3 -type f -iname 'LICENSE*' -print -quit)"
-          test -n "$python_license"
+          if [[ -z "$python_license" ]]; then
+            echo "CPython licence file was not found" >&2
+            exit 1
+          fi
           cp "$python_license" "$lib/LICENSES/CPython.txt"
           python tools/collect_licenses.py --site-packages "$site_packages" --report "$lib/licenses/python-packages.json" --notices-dir "$lib/licenses/python"
           COMMIT='${{ needs.resolve-upstream.outputs.commit }}' python -c 'import json, os; print(json.dumps({"upstream_repository":"AntaresTechno/Viewer", "upstream_commit":os.environ["COMMIT"], "python_series":"3.12", "runtime":"python-build-standalone"}))' > "$lib/lib.json"
+          "$lib/python/bin/python3" -c "import fastapi, quickjs, uvicorn"
+          tar -czf "$RUNNER_TEMP/viewer-lib-$PLATFORM_KEY.tar.gz" -C "$RUNNER_TEMP/viewer-lib" "$PLATFORM_KEY"
       - uses: actions/upload-artifact@v6
         with:
           name: viewer-lib-${{ matrix.key }}
-          path: ${{ runner.temp }}/viewer-lib/${{ matrix.key }}
+          path: ${{ runner.temp }}/viewer-lib-${{ matrix.key }}.tar.gz
           if-no-files-found: error
 
   publish:
@@ -147,20 +171,22 @@ jobs:
       - uses: actions/download-artifact@v7
         with:
           pattern: viewer-lib-*
-          path: ${{ runner.temp }}/viewer-lib/lib
-          merge-multiple: false
+          path: ${{ runner.temp }}/viewer-lib/archives
+          merge-multiple: true
       - name: Assemble lib branch layout
         shell: bash
         run: |
           set -euo pipefail
           root="${{ runner.temp }}/viewer-lib/lib"
-          mkdir -p "$root/windows-amd64" "$root/linux-amd64" "$root/linux-arm64"
+          mkdir -p "$root"
+          for archive in "${{ runner.temp }}"/viewer-lib/archives/*.tar.gz; do
+            tar -xzf "$archive" -C "$root"
+          done
           for key in windows-amd64 linux-amd64 linux-arm64; do
-            source="$root/viewer-lib-$key"
-            test -d "$source"
-            mv "$source"/* "$root/$key/"
-            rmdir "$source"
-            test -f "$root/$key/lib.json"
+            if [[ ! -f "$root/$key/lib.json" ]]; then
+              echo "Missing bundle manifest: $root/$key/lib.json" >&2
+              exit 1
+            fi
           done
       - name: Publish all platform bundles atomically
         uses: peaceiris/actions-gh-pages@v4.1.0
