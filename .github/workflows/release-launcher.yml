@@ -26,7 +26,7 @@ jobs:
           go-version: stable
       - name: Install Linux GUI build libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libvulkan-dev
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxfixes-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libvulkan-dev
       - name: Build native launcher
         shell: bash
         run: |
