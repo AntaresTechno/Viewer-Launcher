@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - runner: windows-2025
@@ -23,19 +24,19 @@ jobs:
             target: darwin-arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
         with:
           go-version: stable
       - name: Install Linux GUI build libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libvulkan-dev
       - name: Build native launcher
         shell: bash
         run: |
           go mod download
           go build -trimpath -ldflags "-s -w -X main.repository=${{ github.repository }}" -o ViewerLauncher .
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: ViewerLauncher-${{ matrix.target }}
           path: ViewerLauncher*

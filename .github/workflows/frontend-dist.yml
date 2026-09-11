@@ -16,14 +16,14 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
         with:
           repository: AntaresTechno/Viewer
           ref: ${{ inputs.upstream_ref || 'main' }}
           path: upstream
           fetch-depth: 1
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
@@ -42,7 +42,7 @@ jobs:
           cp upstream/LICENSE publish/web/Viewer-GPL-3.0-or-later.txt
           printf '{"upstream_repository":"AntaresTechno/Viewer","upstream_commit":"%s","built_at":"%s"}\n' "$(git -C upstream rev-parse HEAD)" "$(date --utc +%FT%TZ)" > publish/web/release.json
       - name: Publish build snapshot
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           publish_branch: web
