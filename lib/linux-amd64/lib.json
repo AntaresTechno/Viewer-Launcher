@@ -4,23 +4,23 @@
   "python_series": "3.12",
   "runtime": "python-build-standalone",
   "bundle_format": "tar.gz-split-v1",
-  "bundle_sha256": "0f5f82b8660884081f6d95a0c9194daaa9532f26122a0425190b096da9113503",
-  "bundle_size": 133572721,
+  "bundle_sha256": "e214c4d1c940d04d38286e8215e01d46134a5ad507aa338707325bc56014acf8",
+  "bundle_size": 133565665,
   "parts": [
     {
       "name": "bundle.tar.gz.part-000",
-      "sha256": "1163229c830c7cca290ddd34bc57a39bb3a84456bde4eb2d8b233c1570280c4b",
+      "sha256": "6fdf94ecb376aa025ff987fcf13af54d5a899817a09ca370d6a8bca42d87e99e",
       "size": 49283072
     },
     {
       "name": "bundle.tar.gz.part-001",
-      "sha256": "c228f07eda5b98e29dd7caee07e60bbc683537bbcccf283aae198128df137abf",
+      "sha256": "0cf35c8a7fd0b8c1ab87e9ddeb78c016b5bb4a096c8d1d99ed8cb819b9f6385c",
       "size": 49283072
     },
     {
       "name": "bundle.tar.gz.part-002",
-      "sha256": "a133e12bb16e1b89c46d742b8355a7aef8093212b6ad68b429faf138cccc6b70",
-      "size": 35006577
+      "sha256": "799605d2c79b5ca2b1dcbc49f41c23bad0ebd995c60ab9e87cf0a0a1a0f087d4",
+      "size": 34999521
     }
   ]
 }
