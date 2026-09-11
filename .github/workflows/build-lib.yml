@@ -71,7 +71,7 @@ jobs:
           python -m pip install --no-index --find-links $wheels --target (Join-Path $lib 'python/Lib/site-packages') -r upstream/backend/requirements.txt
           Copy-Item upstream/LICENSE (Join-Path $lib 'LICENSES/Viewer-GPL-3.0-or-later.txt') -Force
           Copy-Item (Join-Path $lib 'python/LICENSE.txt') (Join-Path $lib 'LICENSES/CPython.txt') -Force
-          python tools/license_check.py --site-packages (Join-Path $lib 'python/Lib/site-packages') --policy licenses-policy.json --report (Join-Path $lib 'licenses/python-packages.json') --notices-dir (Join-Path $lib 'licenses/python')
+          python tools/collect_licenses.py --site-packages (Join-Path $lib 'python/Lib/site-packages') --report (Join-Path $lib 'licenses/python-packages.json') --notices-dir (Join-Path $lib 'licenses/python')
           @{ upstream_repository = 'AntaresTechno/Viewer'; upstream_commit = '${{ needs.resolve-upstream.outputs.commit }}'; python_version = $version; built_at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $lib 'lib.json') -Encoding utf8
       - uses: actions/upload-artifact@v6
         with:
@@ -132,7 +132,7 @@ jobs:
           python_license="$(find "$lib/python" -maxdepth 3 -type f -iname 'LICENSE*' -print -quit)"
           test -n "$python_license"
           cp "$python_license" "$lib/LICENSES/CPython.txt"
-          python tools/license_check.py --site-packages "$site_packages" --policy licenses-policy.json --report "$lib/licenses/python-packages.json" --notices-dir "$lib/licenses/python"
+          python tools/collect_licenses.py --site-packages "$site_packages" --report "$lib/licenses/python-packages.json" --notices-dir "$lib/licenses/python"
           COMMIT='${{ needs.resolve-upstream.outputs.commit }}' python -c 'import json, os; print(json.dumps({"upstream_repository":"AntaresTechno/Viewer", "upstream_commit":os.environ["COMMIT"], "python_series":"3.12", "runtime":"python-build-standalone"}))' > "$lib/lib.json"
       - uses: actions/upload-artifact@v6
         with:

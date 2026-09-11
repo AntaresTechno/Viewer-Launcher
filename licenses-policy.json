@@ -1,8 +1,0 @@
-{
-  "allowed_markers": [
-    "MIT", "BSD", "Apache", "PSF", "Python Software Foundation",
-    "ISC", "MPL-2.0", "Mozilla Public License"
-  ],
-  "denied_markers": ["AGPL", "GNU General Public License", "GPL-"],
-  "approved_packages": {}
-}
