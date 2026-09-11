@@ -1,4 +1,4 @@
-# Viewer Launcher
+# Viewer Launcher  
 
 一个 Windows、Linux 的 Go + Gio 原生启动器。它以 Go HTTP 服务承载 Viewer 前端，反向代理 API 到隔离的 CPython 后端。
 浏览器和 Python 均只绑定本机回环地址；程序、SQLite 数据、设置和日志统一位于启动器同级的 `./program`，数据不会随组件更新被覆盖。开发时可通过 `VIEWER_LAUNCHER_ROOT` 覆盖该目录。
