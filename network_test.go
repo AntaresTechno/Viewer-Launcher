@@ -22,7 +22,7 @@ func TestDownloadSettingsRewrite(t *testing.T) {
 
 func TestDownloadSettingsPersistence(t *testing.T) {
 	root := t.TempDir()
-	want := DownloadSettings{Mirror: "https://mirror.example/", Proxy: "socks5://127.0.0.1:1080"}
+	want := DownloadSettings{Mirror: "https://mirror.example/", Proxy: "socks5://127.0.0.1:1080", GuideComplete: true}
 	if err := saveDownloadSettings(root, want); err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +32,20 @@ func TestDownloadSettingsPersistence(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("loadDownloadSettings() = %#v, want %#v", got, want)
+	}
+}
+
+func TestGuideCompletionSurvivesNetworkChanges(t *testing.T) {
+	launcher := NewLauncher(t.TempDir(), "owner/repository", nil)
+	if err := launcher.CompleteGuide(); err != nil {
+		t.Fatal(err)
+	}
+	if err := launcher.ConfigureDownloads("https://mirror.example/", ""); err != nil {
+		t.Fatal(err)
+	}
+	settings := launcher.DownloadSettings()
+	if !settings.GuideComplete {
+		t.Fatal("network settings cleared the completed guide state")
 	}
 }
 

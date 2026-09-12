@@ -17,8 +17,9 @@ const settingsFile = "settings.json"
 // prefix (or a template containing {url}); Proxy is an explicit HTTP(S) or
 // SOCKS5 proxy. An empty Proxy keeps Go's standard environment-proxy behavior.
 type DownloadSettings struct {
-	Mirror string `json:"mirror,omitempty"`
-	Proxy  string `json:"proxy,omitempty"`
+	Mirror        string `json:"mirror,omitempty"`
+	Proxy         string `json:"proxy,omitempty"`
+	GuideComplete bool   `json:"guide_complete,omitempty"`
 }
 
 func (settings DownloadSettings) normalized() DownloadSettings {

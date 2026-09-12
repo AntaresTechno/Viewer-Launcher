@@ -30,7 +30,7 @@ const (
 
 type State struct {
 	Root, URL, Message, Err, Logs string
-	Running                       bool
+	Running, Busy                 bool
 }
 type libManifest struct {
 	UpstreamCommit string    `json:"upstream_commit"`
@@ -105,7 +105,10 @@ func (l *Launcher) DownloadSettings() DownloadSettings {
 }
 
 func (l *Launcher) ConfigureDownloads(mirror, proxy string) error {
-	settings := DownloadSettings{Mirror: mirror, Proxy: proxy}.normalized()
+	l.mu.RLock()
+	guideComplete := l.settings.GuideComplete
+	l.mu.RUnlock()
+	settings := DownloadSettings{Mirror: mirror, Proxy: proxy, GuideComplete: guideComplete}.normalized()
 	if err := saveDownloadSettings(l.root, settings); err != nil {
 		l.mu.Lock()
 		l.state.Message, l.state.Err = "保存下载配置失败："+err.Error(), err.Error()
@@ -127,6 +130,23 @@ func (l *Launcher) ConfigureDownloads(mirror, proxy string) error {
 	} else {
 		l.appendLog("显式下载代理已关闭（仍遵循系统代理环境变量）")
 	}
+	return nil
+}
+
+// CompleteGuide persists whether the first-run guide should open automatically.
+// The guide can still be opened manually from the launcher header.
+func (l *Launcher) CompleteGuide() error {
+	l.mu.RLock()
+	settings := l.settings
+	l.mu.RUnlock()
+	settings.GuideComplete = true
+	if err := saveDownloadSettings(l.root, settings); err != nil {
+		l.set("保存引导状态失败", err, l.Snapshot().Running)
+		return err
+	}
+	l.mu.Lock()
+	l.settings = settings
+	l.mu.Unlock()
 	return nil
 }
 func (l *Launcher) notifyUI() {
@@ -166,6 +186,26 @@ func (l *Launcher) appendLog(message string) {
 }
 
 func (l *Launcher) EnsureAndStart(refresh bool) {
+	l.mu.Lock()
+	if l.state.Busy {
+		l.mu.Unlock()
+		return
+	}
+	if l.state.Running && !refresh {
+		l.mu.Unlock()
+		l.OpenBrowser()
+		return
+	}
+	l.state.Busy = true
+	l.mu.Unlock()
+	l.notifyUI()
+	defer func() {
+		l.mu.Lock()
+		l.state.Busy = false
+		l.mu.Unlock()
+		l.notifyUI()
+	}()
+
 	if l.Repository() == "" {
 		l.set("无法下载发布物", errors.New("未配置 GitHub 发布仓库"), false)
 		return
@@ -173,10 +213,6 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 	platform, err := platformKey()
 	if err != nil {
 		l.set("不支持当前平台", err, false)
-		return
-	}
-	if l.Snapshot().Running && !refresh {
-		l.OpenBrowser()
 		return
 	}
 	l.Stop()
