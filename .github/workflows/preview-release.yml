@@ -22,7 +22,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RELEASE_TAG: preview
+  RELEASE_CHANNEL: preview
+  RELEASE_TAG: preview-${{ github.run_number }}
 
 jobs:
   resolve-upstream:
@@ -263,7 +264,7 @@ jobs:
           set -euo pipefail
           go test ./...
           go test -tags cli ./...
-          flags="-s -w -X main.repository=${GITHUB_REPOSITORY} -X main.version=preview-${GITHUB_SHA::7} -X main.releaseTag=${RELEASE_TAG}"
+          flags="-s -w -X main.repository=${GITHUB_REPOSITORY} -X main.version=${RELEASE_TAG}-${GITHUB_SHA::7} -X main.releaseChannel=${RELEASE_CHANNEL}"
           go build -trimpath -ldflags "$flags" -o "viewer-launcher-${TARGET}${EXTENSION}" .
           go build -tags cli -trimpath -ldflags "$flags" -o "viewer-launcher-cli-${TARGET}${EXTENSION}" .
       - name: Package Windows launchers
@@ -294,11 +295,52 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/download-artifact@v7
         with:
           pattern: payload-*
           path: assets
           merge-multiple: true
+      - name: Collect commits added since the previous preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          current="$GITHUB_SHA"
+          single_commit=false
+          previous_tag="$(git tag --list "${RELEASE_CHANNEL}-*" --sort=-version:refname | sed -n '1p')"
+          if [[ -z "$previous_tag" ]] && git rev-parse --verify "refs/tags/$RELEASE_CHANNEL^{commit}" >/dev/null 2>&1; then
+            previous_tag="$RELEASE_CHANNEL"
+          fi
+          if [[ -n "$previous_tag" ]] && previous="$(git rev-parse --verify "refs/tags/$previous_tag^{commit}" 2>/dev/null)"; then
+            if [[ "$previous" == "$current" ]]; then
+              echo "- 本次重新构建没有新增启动器 commit。" > new-commits.md
+              exit 0
+            fi
+            if git merge-base --is-ancestor "$previous" "$current"; then
+              range="$previous..$current"
+            else
+              echo "- 上一个 preview 不在当前分支历史中，以下仅列出当前 commit。" > new-commits.md
+              single_commit=true
+            fi
+          else
+            echo "- 首次创建 preview，以下列出当前 commit。" > new-commits.md
+            single_commit=true
+          fi
+          if [[ "$single_commit" == true ]]; then
+            git log -1 \
+              --pretty=format:'- [`%h`](https://github.com/'"$GITHUB_REPOSITORY"'/commit/%H) %s' \
+              "$current" >> new-commits.md
+            printf '\n' >> new-commits.md
+            exit 0
+          fi
+          count="$(git rev-list --count "$range")"
+          git log --reverse --max-count=100 \
+            --pretty=format:'- [`%h`](https://github.com/'"$GITHUB_REPOSITORY"'/commit/%H) %s' \
+            "$range" >> new-commits.md
+          printf '\n' >> new-commits.md
+          if (( count > 100 )); then
+            printf -- '- 另有 %d 个较早 commit 未展开。\n' "$((count - 100))" >> new-commits.md
       - name: Generate manifest and release table
         env:
           UPSTREAM_COMMIT: ${{ needs.resolve-upstream.outputs.commit }}
@@ -309,16 +351,15 @@ jobs:
             --source-commit "$GITHUB_SHA" \
             --upstream-commit "$UPSTREAM_COMMIT" \
             --tag "$RELEASE_TAG" \
+            --commits new-commits.md \
             --notes release-notes.md
-      - name: Publish rolling prerelease
+      - name: Publish versioned prerelease
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="Viewer Launcher Preview ${GITHUB_SHA::7}"
-          git tag --force "$RELEASE_TAG" "$GITHUB_SHA"
-          git push origin "refs/tags/$RELEASE_TAG" --force
+          title="Viewer Launcher ${RELEASE_TAG} (${GITHUB_SHA::7})"
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             while IFS= read -r stale; do
               if [[ -n "$stale" && ! -f "assets/$stale" ]]; then
@@ -326,8 +367,8 @@ jobs:
               fi
             done < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
           else
-            gh release create "$RELEASE_TAG" --title "$title" --target "$GITHUB_SHA" --prerelease --latest=false --notes "正在上传预发布文件。"
+            gh release create "$RELEASE_TAG" --title "$title" --target "$GITHUB_SHA" --draft --latest=false --notes "正在上传预发布文件。"
           fi
           find assets -maxdepth 1 -type f ! -name release-manifest.json -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
           gh release upload "$RELEASE_TAG" assets/release-manifest.json --clobber
-          gh release edit "$RELEASE_TAG" --title "$title" --target "$GITHUB_SHA" --prerelease --notes-file release-notes.md
+          gh release edit "$RELEASE_TAG" --title "$title" --target "$GITHUB_SHA" --draft=false --prerelease --notes-file release-notes.md

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"strings"
 )
 
 const releaseManifestSchema = 1
@@ -37,6 +38,64 @@ type releaseAsset struct {
 	Description string `json:"description"`
 	SHA256      string `json:"sha256"`
 	Size        int64  `json:"size"`
+}
+
+type githubRelease struct {
+	TagName     string `json:"tag_name"`
+	Draft       bool   `json:"draft"`
+	Prerelease  bool   `json:"prerelease"`
+	PublishedAt string `json:"published_at"`
+}
+
+func fetchLatestReleaseManifest(ctx context.Context, client *http.Client, settings DownloadSettings, repository, channel string) (releaseManifest, string, error) {
+	if !validRepository(repository) {
+		return releaseManifest{}, "", fmt.Errorf("invalid GitHub repository %q", repository)
+	}
+	if !assetName.MatchString(channel) {
+		return releaseManifest{}, "", fmt.Errorf("invalid release channel %q", channel)
+	}
+	releasesURL := settings.rewrite(fmt.Sprintf("https://api.github.com/repos/%s/releases?per_page=100", repository))
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, releasesURL, nil)
+	if err != nil {
+		return releaseManifest{}, "", err
+	}
+	request.Header.Set("Accept", "application/vnd.github+json")
+	request.Header.Set("User-Agent", "Viewer-Launcher/"+version)
+	response, err := client.Do(request)
+	if err != nil {
+		return releaseManifest{}, "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return releaseManifest{}, "", fmt.Errorf("GitHub releases API returned %s", response.Status)
+	}
+	var releases []githubRelease
+	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&releases); err != nil {
+		return releaseManifest{}, "", err
+	}
+	tag, err := latestReleaseTag(releases, channel)
+	if err != nil {
+		return releaseManifest{}, "", err
+	}
+	manifest, err := fetchReleaseManifest(ctx, client, settings, repository, tag)
+	return manifest, tag, err
+}
+
+func latestReleaseTag(releases []githubRelease, channel string) (string, error) {
+	prefix := channel + "-"
+	var selected githubRelease
+	for _, release := range releases {
+		if release.Draft || !release.Prerelease || !strings.HasPrefix(release.TagName, prefix) || !assetName.MatchString(release.TagName) {
+			continue
+		}
+		if selected.TagName == "" || release.PublishedAt > selected.PublishedAt {
+			selected = release
+		}
+	}
+	if selected.TagName == "" {
+		return "", fmt.Errorf("no published %s-* prerelease was found", channel)
+	}
+	return selected.TagName, nil
 }
 
 func fetchReleaseManifest(ctx context.Context, client *http.Client, settings DownloadSettings, repository, tag string) (releaseManifest, error) {

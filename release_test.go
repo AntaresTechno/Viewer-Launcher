@@ -14,7 +14,7 @@ func validTestManifest() releaseManifest {
 	}
 	return releaseManifest{
 		SchemaVersion:      releaseManifestSchema,
-		ReleaseTag:         "preview",
+		ReleaseTag:         "preview-42",
 		SourceRepository:   "owner/launcher",
 		SourceCommit:       testCommit,
 		UpstreamRepository: "owner/viewer",
@@ -29,7 +29,7 @@ func validTestManifest() releaseManifest {
 
 func TestReleaseManifestSelectsRuntimeSet(t *testing.T) {
 	manifest := validTestManifest()
-	if err := manifest.validate("preview"); err != nil {
+	if err := manifest.validate("preview-42"); err != nil {
 		t.Fatal(err)
 	}
 	assets, err := manifest.runtimeAssets("windows-amd64")
@@ -44,8 +44,31 @@ func TestReleaseManifestSelectsRuntimeSet(t *testing.T) {
 func TestReleaseManifestRejectsDuplicateAsset(t *testing.T) {
 	manifest := validTestManifest()
 	manifest.Assets = append(manifest.Assets, manifest.Assets[0])
-	if err := manifest.validate("preview"); err == nil {
+	if err := manifest.validate("preview-42"); err == nil {
 		t.Fatal("duplicate asset was accepted")
+	}
+}
+
+func TestLatestReleaseTagSelectsNewestPublishedPreview(t *testing.T) {
+	releases := []githubRelease{
+		{TagName: "v1.0.0", Prerelease: false, PublishedAt: "2026-09-13T12:00:00Z"},
+		{TagName: "preview-41", Prerelease: true, PublishedAt: "2026-09-13T13:00:00Z"},
+		{TagName: "preview-42", Prerelease: true, PublishedAt: "2026-09-13T14:00:00Z"},
+		{TagName: "preview-43", Draft: true, Prerelease: true, PublishedAt: "2026-09-13T15:00:00Z"},
+	}
+	tag, err := latestReleaseTag(releases, "preview")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tag != "preview-42" {
+		t.Fatalf("latestReleaseTag() = %q, want preview-42", tag)
+	}
+}
+
+func TestLatestReleaseTagRejectsMissingChannel(t *testing.T) {
+	_, err := latestReleaseTag([]githubRelease{{TagName: "nightly-1", Prerelease: true}}, "preview")
+	if err == nil {
+		t.Fatal("missing preview channel was accepted")
 	}
 }
 

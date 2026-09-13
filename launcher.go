@@ -229,14 +229,15 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 		l.appendLog("本次下载使用代理：" + redactedProxy(settings.Proxy))
 	}
 	l.set("正在读取预发布文件清单", nil, false)
-	manifest, err := fetchReleaseManifest(context.Background(), client, settings, l.Repository(), releaseTag)
+	manifest, selectedTag, err := fetchLatestReleaseManifest(context.Background(), client, settings, l.Repository(), releaseChannel)
 	if err != nil {
 		l.set("读取预发布文件清单失败", err, false)
 		return
 	}
+	l.appendLog("已选择最新预发布：" + selectedTag)
 	if refresh || ready(l.root, manifest.UpstreamCommit) != nil {
 		l.set("正在下载并校验预发布组件", nil, false)
-		if err := InstallRelease(context.Background(), client, settings, l.root, l.Repository(), releaseTag, platform, manifest); err != nil {
+		if err := InstallRelease(context.Background(), client, settings, l.root, l.Repository(), selectedTag, platform, manifest); err != nil {
 			l.set("安装预发布组件失败", err, false)
 			return
 		}

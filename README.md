@@ -5,7 +5,9 @@
 
 ## 预发布结构
 
-推送 `main` 或手动运行 `Build preview release` 后，单一工作流会固定一个 Viewer 上游提交，同时构建所有组件，并上传到标签为 `preview` 的滚动 GitHub Pre-release。发布说明由工作流自动生成，使用 Markdown 表格列出每个文件的用途、平台、字节数和 SHA-256。
+推送 `main` 或手动运行 `Build preview release` 后，单一工作流会固定一个 Viewer 上游提交，同时构建所有组件，并创建形如 `preview-42` 的独立 GitHub Pre-release。发布说明会列出自上一次 preview 以来新增的启动器 commit，并使用 Markdown 表格展示每个文件的用途、平台、字节数和 SHA-256。
+
+每个 workflow run number 对应一个长期保留的 Pre-release；重新运行同一次 workflow 只会修复该版本，不会创建重复记录。启动器通过 GitHub Releases API 查找发布时间最新的 `preview-*`，因此无需依赖固定下载标签。请注意，保留历史也会持续增加 Release 存储占用。
 
 | 文件 | 作用 |
 | --- | --- |
@@ -16,7 +18,7 @@
 | `viewer-launchers-windows-amd64.zip` | Windows x64 的 Gio 桌面版与 CLI 启动器 |
 | `viewer-launchers-linux-<arch>.tar.gz` | Linux 对应架构的 Gio 桌面版与 CLI 启动器 |
 
-安装逻辑为：读取 `preview/release-manifest.json` → 选择 web、backend 和当前平台 runtime → 逐个下载并校验声明的大小和 SHA-256 → 安全解压到临时目录 → 全部成功后以目录重命名一次性切换三项组件 → 核验三份 `release.json` 的上游提交。任何下载、校验或解压失败都不会替换现有组件，`data`、设置和日志不会参与更新。
+安装逻辑为：从 GitHub Releases API 查找最新的 `preview-*` → 读取该版本的 `release-manifest.json` → 选择 web、backend 和当前平台 runtime → 逐个下载并校验声明的大小和 SHA-256 → 安全解压到临时目录 → 全部成功后以目录重命名一次性切换三项组件 → 核验三份 `release.json` 的上游提交。任何下载、校验或解压失败都不会替换现有组件，`data`、设置和日志不会参与更新。
 
 归档解压拒绝绝对路径、`..`、越界硬链接和不安全符号链接；Windows 拒绝归档中的符号链接，Linux 仅允许指向安装目录内部的相对符号链接。
 
@@ -33,7 +35,7 @@
 ## 初次配置
 
 1. 将此仓库推送到 GitHub，并在仓库 Settings → Actions → General 中允许 workflow 对 `GITHUB_TOKEN` 读写。
-2. 推送 `main` 后，`Build preview release` 会创建或更新 `preview` 预发布。无需再维护生成用的 `web`、`lib` 分支。
+2. 推送 `main` 后，`Build preview release` 会创建新的 `preview-<run number>` 预发布。无需再维护生成用的 `web`、`lib` 分支。
 3. 若需固定特定 Viewer 版本，可手动运行工作流并填写 tag、branch 或完整 commit SHA。该提交会同时用于 web、backend 和三个平台的 Python 依赖构建。
 4. Windows 下运行项目根目录的构建脚本。它会依次格式化源码、运行 GUI/CLI 两套测试，并在 `dist` 目录生成两个版本：
 

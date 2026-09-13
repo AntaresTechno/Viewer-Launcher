@@ -37,6 +37,7 @@ def main() -> None:
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--upstream-commit", required=True)
     parser.add_argument("--tag", default="preview")
+    parser.add_argument("--commits", type=Path, required=True)
     parser.add_argument("--notes", type=Path, required=True)
     args = parser.parse_args()
 
@@ -84,11 +85,17 @@ def main() -> None:
         }
     ]
     lines = [
-        "# Viewer Launcher Preview",
+        f"# Viewer Launcher {args.tag}",
         "",
         f"- 启动器提交：`{args.source_commit}`",
         f"- Viewer 提交：`{args.upstream_commit}`",
         "- 此版本为自动更新的预发布版本。相同文件名会在下一次构建时替换。",
+        "",
+        "## 本次新增提交",
+        "",
+        args.commits.read_text(encoding="utf-8").strip(),
+        "",
+        "## 发布文件",
         "",
         "| 文件 | 作用 | 平台 | 大小（bytes） | SHA-256 |",
         "| --- | --- | --- | ---: | --- |",
