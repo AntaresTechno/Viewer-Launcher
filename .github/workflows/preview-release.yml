@@ -1,0 +1,316 @@
+name: Build preview release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: Viewer tag, branch, or immutable commit SHA
+        required: true
+        default: main
+      python_version:
+        description: CPython 3.12 series to package
+        required: true
+        default: "3.12"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: preview-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RELEASE_TAG: preview
+
+jobs:
+  resolve-upstream:
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.commit.outputs.value }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ inputs.upstream_ref || 'main' }}
+          fetch-depth: 1
+      - id: commit
+        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  build-viewer:
+    needs: resolve-upstream
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ needs.resolve-upstream.outputs.commit }}
+          path: upstream
+          fetch-depth: 1
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: upstream/frontend/package-lock.json
+      - name: Build pinned Viewer frontend
+        working-directory: upstream/frontend
+        run: |
+          npm ci --ignore-scripts
+          npm rebuild esbuild
+          npm run build
+      - name: Package web and backend
+        shell: bash
+        env:
+          UPSTREAM_COMMIT: ${{ needs.resolve-upstream.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/payload/web" "$RUNNER_TEMP/payload/backend"
+          cp -a upstream/frontend/dist/. "$RUNNER_TEMP/payload/web/"
+          cp -a upstream/backend/. "$RUNNER_TEMP/payload/backend/"
+          cp upstream/LICENSE "$RUNNER_TEMP/payload/web/Viewer-GPL-3.0-or-later.txt"
+          cp upstream/LICENSE "$RUNNER_TEMP/payload/backend/Viewer-GPL-3.0-or-later.txt"
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          metadata = {
+              "upstream_repository": "AntaresTechno/Viewer",
+              "upstream_commit": os.environ["UPSTREAM_COMMIT"],
+              "built_at": datetime.now(timezone.utc).isoformat(),
+          }
+          root = Path(os.environ["RUNNER_TEMP"]) / "payload"
+          for component in ("web", "backend"):
+              (root / component / "release.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+          PY
+          tar -czf viewer-web.tar.gz -C "$RUNNER_TEMP/payload" web
+          tar -czf viewer-backend.tar.gz -C "$RUNNER_TEMP/payload" backend
+      - uses: actions/upload-artifact@v6
+        with:
+          name: payload-viewer
+          path: |
+            viewer-web.tar.gz
+            viewer-backend.tar.gz
+          if-no-files-found: error
+
+  build-runtime-windows:
+    needs: resolve-upstream
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ needs.resolve-upstream.outputs.commit }}
+          path: upstream
+          fetch-depth: 1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ inputs.python_version || '3.12' }}
+          architecture: x64
+      - name: Package Windows Python runtime
+        shell: pwsh
+        env:
+          UPSTREAM_COMMIT: ${{ needs.resolve-upstream.outputs.commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bundle = Join-Path $env:RUNNER_TEMP 'bundle'
+          $lib = Join-Path $bundle 'lib'
+          New-Item -ItemType Directory -Force $lib, (Join-Path $lib 'licenses/python'), (Join-Path $lib 'LICENSES') | Out-Null
+          $pythonVersion = python -c "import sys; print('.'.join(map(str, sys.version_info[:3])))"
+          $zip = Join-Path $env:RUNNER_TEMP "python-$pythonVersion-embed-amd64.zip"
+          Invoke-WebRequest -Uri "https://www.python.org/ftp/python/$pythonVersion/python-$pythonVersion-embed-amd64.zip" -OutFile $zip
+          Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $lib 'python') -Force
+          $pth = Get-ChildItem (Join-Path $lib 'python') -Filter 'python*._pth' | Select-Object -First 1
+          (Get-Content -LiteralPath $pth.FullName) -replace '^#import site$', "Lib/site-packages`n../../backend`nimport site" | Set-Content -LiteralPath $pth.FullName -Encoding ascii
+          python -m pip install --upgrade pip
+          $wheels = Join-Path $env:RUNNER_TEMP 'wheels'
+          python -m pip download --only-binary=:all: --dest $wheels -r upstream/backend/requirements.txt
+          python -m pip install --no-index --find-links $wheels --target (Join-Path $lib 'python/Lib/site-packages') -r upstream/backend/requirements.txt
+          Copy-Item upstream/LICENSE (Join-Path $lib 'LICENSES/Viewer-GPL-3.0-or-later.txt') -Force
+          Copy-Item (Join-Path $lib 'python/LICENSE.txt') (Join-Path $lib 'LICENSES/CPython.txt') -Force
+          python tools/collect_licenses.py --site-packages (Join-Path $lib 'python/Lib/site-packages') --report (Join-Path $lib 'licenses/python-packages.json') --notices-dir (Join-Path $lib 'licenses/python')
+          @{ upstream_repository = 'AntaresTechno/Viewer'; upstream_commit = $env:UPSTREAM_COMMIT; python_version = $pythonVersion; built_at = (Get-Date).ToUniversalTime().ToString('o') } | ConvertTo-Json | Set-Content (Join-Path $lib 'release.json') -Encoding utf8
+          & (Join-Path $lib 'python/python.exe') -c "import fastapi, quickjs, uvicorn"
+          tar.exe -czf viewer-runtime-windows-amd64.tar.gz -C $bundle lib
+          if ($LASTEXITCODE -ne 0) { throw 'Failed to archive Windows runtime' }
+      - uses: actions/upload-artifact@v6
+        with:
+          name: payload-runtime-windows-amd64
+          path: viewer-runtime-windows-amd64.tar.gz
+          if-no-files-found: error
+
+  build-runtime-linux:
+    needs: resolve-upstream
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            key: linux-amd64
+            pbs_suffix: x86_64-unknown-linux-gnu
+            manylinux_image: quay.io/pypa/manylinux_2_28_x86_64
+          - runner: ubuntu-24.04-arm
+            key: linux-arm64
+            pbs_suffix: aarch64-unknown-linux-gnu
+            manylinux_image: quay.io/pypa/manylinux_2_28_aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: AntaresTechno/Viewer
+          ref: ${{ needs.resolve-upstream.outputs.commit }}
+          path: upstream
+          fetch-depth: 1
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Package Linux Python runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PLATFORM_KEY: ${{ matrix.key }}
+          PBS_SUFFIX: ${{ matrix.pbs_suffix }}
+          MANYLINUX_IMAGE: ${{ matrix.manylinux_image }}
+          UPSTREAM_COMMIT: ${{ needs.resolve-upstream.outputs.commit }}
+        run: |
+          set -euo pipefail
+          bundle="$RUNNER_TEMP/bundle"
+          lib="$bundle/lib"
+          mkdir -p "$lib/licenses/python" "$lib/LICENSES" "$RUNNER_TEMP/wheels" "$RUNNER_TEMP/pbs"
+          asset="$(gh api repos/astral-sh/python-build-standalone/releases/latest --jq '.assets[].name' | grep "^cpython-3\.12.*${PBS_SUFFIX}-install_only\.tar\.gz$" | head -n 1 || true)"
+          if [[ -z "$asset" ]]; then
+            echo "No CPython 3.12 install_only asset found for $PBS_SUFFIX" >&2
+            exit 1
+          fi
+          gh release download --repo astral-sh/python-build-standalone --pattern "$asset" --dir "$RUNNER_TEMP/pbs"
+          tar -xzf "$RUNNER_TEMP/pbs/$asset" -C "$RUNNER_TEMP/pbs"
+          mv "$RUNNER_TEMP/pbs/python" "$lib/python"
+          stdlib="$(find "$lib/python/lib" -mindepth 1 -maxdepth 1 -type d -name 'python3.12' -print -quit)"
+          if [[ -z "$stdlib" ]]; then
+            echo 'CPython 3.12 standard library directory was not found' >&2
+            exit 1
+          fi
+          site_packages="$stdlib/site-packages"
+          mkdir -p "$site_packages"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/upstream/backend:/viewer-backend:ro" \
+            -v "$RUNNER_TEMP/wheels:/wheels" \
+            "$MANYLINUX_IMAGE" \
+            /opt/python/cp312-cp312/bin/pip wheel --wheel-dir /wheels -r /viewer-backend/requirements.txt
+          python tools/install_wheels.py --wheels "$RUNNER_TEMP/wheels" --target "$site_packages"
+          cp upstream/LICENSE "$lib/LICENSES/Viewer-GPL-3.0-or-later.txt"
+          python_license="$(find "$lib/python" -maxdepth 3 -type f -iname 'LICENSE*' -print -quit)"
+          test -n "$python_license"
+          cp "$python_license" "$lib/LICENSES/CPython.txt"
+          python tools/collect_licenses.py --site-packages "$site_packages" --report "$lib/licenses/python-packages.json" --notices-dir "$lib/licenses/python"
+          python - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          metadata = {
+              "upstream_repository": "AntaresTechno/Viewer",
+              "upstream_commit": os.environ["UPSTREAM_COMMIT"],
+              "python_series": "3.12",
+              "runtime": "python-build-standalone",
+              "built_at": datetime.now(timezone.utc).isoformat(),
+          }
+          (Path(os.environ["RUNNER_TEMP"]) / "bundle/lib/release.json").write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+          PY
+          "$lib/python/bin/python3" -c "import fastapi, quickjs, uvicorn"
+          tar -czf "viewer-runtime-$PLATFORM_KEY.tar.gz" -C "$bundle" lib
+      - uses: actions/upload-artifact@v6
+        with:
+          name: payload-runtime-${{ matrix.key }}
+          path: viewer-runtime-${{ matrix.key }}.tar.gz
+          if-no-files-found: error
+
+  build-launcher:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: windows-2025
+            key: windows-amd64
+            extension: .exe
+          - runner: ubuntu-24.04
+            key: linux-amd64
+            extension: ""
+          - runner: ubuntu-24.04-arm
+            key: linux-arm64
+            extension: ""
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - name: Install Linux GUI build libraries
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libx11-xcb-dev libxcb1-dev libxcursor-dev libxfixes-dev libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libegl1-mesa-dev libgles2-mesa-dev libvulkan-dev
+      - name: Test and build launchers
+        shell: bash
+        env:
+          TARGET: ${{ matrix.key }}
+          EXTENSION: ${{ matrix.extension }}
+        run: |
+          set -euo pipefail
+          go test ./...
+          go test -tags cli ./...
+          flags="-s -w -X main.repository=${GITHUB_REPOSITORY} -X main.version=preview-${GITHUB_SHA::7} -X main.releaseTag=${RELEASE_TAG}"
+          go build -trimpath -ldflags "$flags" -o "viewer-launcher-${TARGET}${EXTENSION}" .
+          go build -tags cli -trimpath -ldflags "$flags" -o "viewer-launcher-cli-${TARGET}${EXTENSION}" .
+      - uses: actions/upload-artifact@v6
+        with:
+          name: payload-launcher-${{ matrix.key }}
+          path: viewer-launcher-*
+          if-no-files-found: error
+
+  publish:
+    needs: [resolve-upstream, build-viewer, build-runtime-windows, build-runtime-linux, build-launcher]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: payload-*
+          path: assets
+          merge-multiple: true
+      - name: Generate manifest and release table
+        env:
+          UPSTREAM_COMMIT: ${{ needs.resolve-upstream.outputs.commit }}
+        run: |
+          python tools/generate_release_manifest.py \
+            --assets assets \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --upstream-commit "$UPSTREAM_COMMIT" \
+            --tag "$RELEASE_TAG" \
+            --notes release-notes.md
+      - name: Publish rolling prerelease
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="Viewer Launcher Preview ${GITHUB_SHA::7}"
+          git tag --force "$RELEASE_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$RELEASE_TAG" --force
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            while IFS= read -r stale; do
+              if [[ -n "$stale" && ! -f "assets/$stale" ]]; then
+                gh release delete-asset "$RELEASE_TAG" "$stale" --yes
+              fi
+            done < <(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
+          else
+            gh release create "$RELEASE_TAG" --title "$title" --target "$GITHUB_SHA" --prerelease --latest=false --notes "正在上传预发布文件。"
+          fi
+          find assets -maxdepth 1 -type f ! -name release-manifest.json -print0 | xargs -0 gh release upload "$RELEASE_TAG" --clobber
+          gh release upload "$RELEASE_TAG" assets/release-manifest.json --clobber
+          gh release edit "$RELEASE_TAG" --title "$title" --target "$GITHUB_SHA" --prerelease --notes-file release-notes.md

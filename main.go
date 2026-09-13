@@ -1,3 +1,5 @@
+//go:build !cli
+
 // Viewer Launcher hosts Viewer web assets and starts the upstream FastAPI
 // backend from a self-contained Python dependency bundle.
 package main
@@ -22,10 +24,6 @@ import (
 	"gioui.org/widget/material"
 	"golang.org/x/exp/shiny/materialdesign/icons"
 )
-
-// repository defaults to the official launcher repository. Forks can override
-// it with -ldflags or VIEWER_LAUNCHER_REPOSITORY.
-var repository = "AntaresTechno/Viewer-Launcher"
 
 var uiColors = struct {
 	canvas, surface, surfaceAlt, border, text, muted color.NRGBA
@@ -72,6 +70,8 @@ type launcherUI struct {
 	guideStep       int
 	networkExpanded bool
 	logsExpanded    bool
+	lastBusy        bool
+	lastError       string
 }
 
 func main() {
@@ -132,6 +132,11 @@ func textShaper() *text.Shaper {
 
 func (ui *launcherUI) layout(gtx layout.Context, th *material.Theme) {
 	state := ui.launcher.Snapshot()
+	if (state.Busy && !ui.lastBusy) || (state.Err != "" && state.Err != ui.lastError) {
+		ui.logsExpanded = true
+	}
+	ui.lastBusy = state.Busy
+	ui.lastError = state.Err
 	ui.handleEvents(gtx, state)
 	state = ui.launcher.Snapshot()
 
@@ -264,12 +269,11 @@ func (ui *launcherUI) statusCard(gtx layout.Context, th *material.Theme, state S
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(18)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Alignment: layout.Middle}.Layout(gtx,
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions { return infoBlock(gtx, th, "访问地址", state.URL) }),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(18)}.Layout),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return responsivePair(gtx, 18,
+					func(gtx layout.Context) layout.Dimensions { return infoBlock(gtx, th, "访问地址", state.URL) },
+					func(gtx layout.Context) layout.Dimensions {
 						return infoBlock(gtx, th, "程序数据", compactPath(state.Root))
-					}),
+					},
 				)
 			}),
 		)
@@ -357,22 +361,21 @@ func (ui *launcherUI) controlCard(gtx layout.Context, th *material.Theme, state 
 			}),
 			layout.Rigid(layout.Spacer{Height: unit.Dp(10)}.Layout),
 			layout.Rigid(func(gtx layout.Context) layout.Dimensions {
-				return layout.Flex{Spacing: layout.SpaceBetween}.Layout(gtx,
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+				return responsivePair(gtx, 10,
+					func(gtx layout.Context) layout.Dimensions {
 						buttonGTX := gtx
 						if state.Busy {
 							buttonGTX = gtx.Disabled()
 						}
 						return secondaryAction(buttonGTX, th, &ui.update, refreshIcon, "检查并更新", "更新全部组件后重启")
-					}),
-					layout.Rigid(layout.Spacer{Width: unit.Dp(10)}.Layout),
-					layout.Flexed(1, func(gtx layout.Context) layout.Dimensions {
+					},
+					func(gtx layout.Context) layout.Dimensions {
 						buttonGTX := gtx
 						if !state.Running || state.Busy {
 							buttonGTX = gtx.Disabled()
 						}
 						return secondaryAction(buttonGTX, th, &ui.stop, stopIcon, "停止服务", "安全关闭本地 Viewer")
-					}),
+					},
 				)
 			}),
 		)
@@ -471,7 +474,7 @@ func (ui *launcherUI) logsCard(gtx layout.Context, th *material.Theme, state Sta
 
 func footer(gtx layout.Context, th *material.Theme) layout.Dimensions {
 	return layout.Inset{Top: unit.Dp(4), Bottom: unit.Dp(22)}.Layout(gtx, func(gtx layout.Context) layout.Dimensions {
-		l := material.Caption(th, "Viewer GPLv3+  ·  CPython PSF  ·  Gio MIT  ·  Python 依赖许可见 lib/licenses")
+		l := material.Caption(th, "Viewer Launcher "+version+"  ·  Viewer GPLv3+  ·  CPython PSF  ·  Gio MIT")
 		l.Color = uiColors.muted
 		l.Alignment = text.Middle
 		return l.Layout(gtx)
@@ -700,6 +703,29 @@ func contentWidth(gtx layout.Context, content layout.Widget) layout.Dimensions {
 		gtx.Constraints.Max.X = maxWidth
 		return content(gtx)
 	})
+}
+
+// responsivePair keeps dense desktop layouts compact while preserving readable
+// controls on the minimum-width window and high-DPI displays.
+func responsivePair(gtx layout.Context, gap unit.Dp, first, second layout.Widget) layout.Dimensions {
+	fullWidth := func(widget layout.Widget) layout.Widget {
+		return func(gtx layout.Context) layout.Dimensions {
+			gtx.Constraints.Min.X = gtx.Constraints.Max.X
+			return widget(gtx)
+		}
+	}
+	if gtx.Constraints.Max.X < gtx.Dp(unit.Dp(620)) {
+		return layout.Flex{Axis: layout.Vertical}.Layout(gtx,
+			layout.Rigid(fullWidth(first)),
+			layout.Rigid(layout.Spacer{Height: gap}.Layout),
+			layout.Rigid(fullWidth(second)),
+		)
+	}
+	return layout.Flex{Spacing: layout.SpaceBetween}.Layout(gtx,
+		layout.Flexed(1, first),
+		layout.Rigid(layout.Spacer{Width: gap}.Layout),
+		layout.Flexed(1, second),
+	)
 }
 
 func statusPresentation(state State) (string, color.NRGBA, color.NRGBA) {

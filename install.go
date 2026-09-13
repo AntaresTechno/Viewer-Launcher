@@ -2,7 +2,6 @@ package main
 
 import (
 	"archive/tar"
-	"archive/zip"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -14,278 +13,129 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 )
 
-// InstallTree downloads a GitHub ref archive over HTTPS, validates every ZIP
-// path, and atomically replaces destinationName with sourceName. For the
-// Viewer backend, ref is the immutable commit recorded by lib/lib.json.
-func InstallTree(ctx context.Context, client *http.Client, settings DownloadSettings, destination, repository, ref, sourceName, destinationName string) error {
-	if !validRepository(repository) {
-		return fmt.Errorf("invalid GitHub repository %q", repository)
+// InstallRelease downloads and verifies the three runtime assets as one
+// release. Existing components are only replaced after every archive has been
+// downloaded, hashed, and safely extracted.
+func InstallRelease(ctx context.Context, client *http.Client, settings DownloadSettings, destination, repository, tag, platform string, manifest releaseManifest) error {
+	required, err := manifest.runtimeAssets(platform)
+	if err != nil {
+		return err
 	}
-	if !validGitHubRef(ref) {
-		return fmt.Errorf("invalid GitHub ref %q", ref)
+	work, err := os.MkdirTemp(destination, ".viewer-release-")
+	if err != nil {
+		return err
 	}
-	downloadURL := settings.rewrite(fmt.Sprintf("https://codeload.github.com/%s/zip/%s", repository, ref))
+	defer os.RemoveAll(work)
+
+	staging := filepath.Join(work, "staging")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		return err
+	}
+	for _, asset := range required {
+		archivePath := filepath.Join(work, asset.Name)
+		if err := downloadReleaseAsset(ctx, client, settings, repository, tag, asset, archivePath); err != nil {
+			return err
+		}
+		assetStage := filepath.Join(staging, asset.InstallDir)
+		if err := untarBundle(archivePath, assetStage); err != nil {
+			return fmt.Errorf("extract %s: %w", asset.Name, err)
+		}
+		source := filepath.Join(assetStage, asset.InstallDir)
+		if info, err := os.Stat(source); err != nil || !info.IsDir() {
+			if err != nil {
+				return fmt.Errorf("%s does not contain %s/: %w", asset.Name, asset.InstallDir, err)
+			}
+			return fmt.Errorf("%s path %s is not a directory", asset.Name, asset.InstallDir)
+		}
+	}
+	return activateRelease(destination, staging, required)
+}
+
+func downloadReleaseAsset(ctx context.Context, client *http.Client, settings DownloadSettings, repository, tag string, asset releaseAsset, destination string) error {
+	downloadURL := settings.rewrite(fmt.Sprintf("https://github.com/%s/releases/download/%s/%s", repository, tag, asset.Name))
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return fmt.Errorf("download %s: %w", ref, err)
+		return fmt.Errorf("download %s: %w", asset.Name, err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return fmt.Errorf("download %s: GitHub returned %s", ref, response.Status)
+		return fmt.Errorf("download %s: GitHub returned %s", asset.Name, response.Status)
 	}
-	work, err := os.MkdirTemp(destination, ".viewer-download-")
+
+	output, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(work)
-	archivePath := filepath.Join(work, "branch.zip")
-	archive, err := os.Create(archivePath)
-	if err != nil {
-		return err
+	digest := sha256.New()
+	written, copyErr := io.Copy(io.MultiWriter(output, digest), io.LimitReader(response.Body, asset.Size+1))
+	closeErr := output.Close()
+	if copyErr != nil {
+		return fmt.Errorf("download %s: %w", asset.Name, copyErr)
 	}
-	if _, err = io.Copy(archive, io.LimitReader(response.Body, 2<<30)); err != nil {
-		archive.Close()
-		return err
+	if closeErr != nil {
+		return fmt.Errorf("close %s: %w", asset.Name, closeErr)
 	}
-	if err = archive.Close(); err != nil {
-		return err
+	if written != asset.Size {
+		return fmt.Errorf("%s size mismatch: expected %d, received %d", asset.Name, asset.Size, written)
 	}
-	staging := filepath.Join(work, "staging")
-	if err := unzipBranch(archivePath, staging); err != nil {
-		return err
-	}
-	// The web and lib workflows publish one named directory below GitHub's
-	// generated top-level archive directory. Do not accept an arbitrary layout.
-	source := filepath.Join(staging, sourceName)
-	if _, err := os.Stat(source); err != nil {
-		return fmt.Errorf("ref %s does not contain required %s/ directory", ref, sourceName)
-	}
-	return activateDirectory(destination, source, destinationName)
-}
-
-const splitBundleFormat = "tar.gz-split-v1"
-
-var (
-	sha256Hash = regexp.MustCompile(`^[0-9a-f]{64}$`)
-	partName   = regexp.MustCompile(`^bundle\.tar\.gz\.part-[0-9]{3,}$`)
-)
-
-func (manifest libManifest) hasBundleMetadata() bool {
-	return manifest.BundleFormat != "" || manifest.BundleSHA256 != "" || manifest.BundleSize != 0 || len(manifest.Parts) != 0
-}
-
-func (manifest libManifest) usesSplitBundle() bool {
-	return manifest.BundleFormat == splitBundleFormat
-}
-
-func (manifest libManifest) validateBundle() error {
-	if manifest.BundleFormat != splitBundleFormat {
-		return fmt.Errorf("unsupported lib bundle format %q", manifest.BundleFormat)
-	}
-	if manifest.BundleSize <= 0 || !sha256Hash.MatchString(manifest.BundleSHA256) {
-		return errors.New("lib.json has an invalid bundle checksum or size")
-	}
-	if len(manifest.Parts) == 0 {
-		return errors.New("lib.json has no bundle parts")
-	}
-	var total int64
-	previous := ""
-	for _, part := range manifest.Parts {
-		if !partName.MatchString(part.Name) || !sha256Hash.MatchString(part.SHA256) || part.Size <= 0 {
-			return errors.New("lib.json contains an invalid bundle part")
-		}
-		if previous != "" && part.Name <= previous {
-			return errors.New("lib.json bundle parts are not in a unique ascending order")
-		}
-		if total > manifest.BundleSize-part.Size {
-			return errors.New("lib.json bundle parts exceed the declared size")
-		}
-		total += part.Size
-		previous = part.Name
-	}
-	if total != manifest.BundleSize {
-		return errors.New("lib.json bundle part sizes do not match the declared size")
+	if actual := hex.EncodeToString(digest.Sum(nil)); actual != asset.SHA256 {
+		return fmt.Errorf("%s SHA-256 mismatch", asset.Name)
 	}
 	return nil
 }
 
-// InstallSplitLib downloads only the current platform's Git-sized archive parts,
-// verifies both per-part and complete-bundle checksums, then atomically installs it.
-func InstallSplitLib(ctx context.Context, client *http.Client, settings DownloadSettings, destination, repository, platform string, manifest libManifest) error {
-	if !validRepository(repository) {
-		return fmt.Errorf("invalid GitHub repository %q", repository)
+// activateRelease switches web, backend, and lib as a transaction. A failed
+// rename restores all previous directories before returning.
+func activateRelease(destination, staging string, assets []releaseAsset) error {
+	type move struct {
+		name, source, final, backup string
+		hadPrevious, activated      bool
 	}
-	if err := manifest.validateBundle(); err != nil {
-		return err
+	moves := make([]move, 0, len(assets))
+	for _, asset := range assets {
+		moves = append(moves, move{
+			name:   asset.InstallDir,
+			source: filepath.Join(staging, asset.InstallDir, asset.InstallDir),
+			final:  filepath.Join(destination, asset.InstallDir),
+			backup: filepath.Join(staging, "previous-"+asset.InstallDir),
+		})
 	}
-	work, err := os.MkdirTemp(destination, ".viewer-lib-")
-	if err != nil {
-		return err
+	rollback := func() {
+		for index := len(moves) - 1; index >= 0; index-- {
+			item := &moves[index]
+			if item.activated {
+				_ = os.RemoveAll(item.final)
+			}
+			if item.hadPrevious {
+				_ = os.Rename(item.backup, item.final)
+			}
+		}
 	}
-	defer os.RemoveAll(work)
-	archivePath := filepath.Join(work, "bundle.tar.gz")
-	archive, err := os.OpenFile(archivePath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return err
-	}
-	archiveHash := sha256.New()
-	writeArchive := io.MultiWriter(archive, archiveHash)
-	for _, part := range manifest.Parts {
-		partURL := settings.rewrite("https://raw.githubusercontent.com/" + repository + "/lib/lib/" + platform + "/" + part.Name)
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, partURL, nil)
-		if err != nil {
-			archive.Close()
+	for index := range moves {
+		item := &moves[index]
+		if _, err := os.Stat(item.final); err == nil {
+			if err := os.Rename(item.final, item.backup); err != nil {
+				rollback()
+				return fmt.Errorf("stage previous %s: %w", item.name, err)
+			}
+			item.hadPrevious = true
+		} else if !os.IsNotExist(err) {
+			rollback()
 			return err
 		}
-		response, err := client.Do(request)
-		if err != nil {
-			archive.Close()
-			return fmt.Errorf("download lib bundle part %s: %w", part.Name, err)
+		if err := os.Rename(item.source, item.final); err != nil {
+			rollback()
+			return fmt.Errorf("activate %s: %w", item.name, err)
 		}
-		if response.StatusCode != http.StatusOK {
-			response.Body.Close()
-			archive.Close()
-			return fmt.Errorf("download lib bundle part %s: GitHub returned %s", part.Name, response.Status)
-		}
-		partHash := sha256.New()
-		copied, copyErr := io.Copy(writeArchive, io.TeeReader(io.LimitReader(response.Body, part.Size+1), partHash))
-		closeErr := response.Body.Close()
-		if copyErr != nil {
-			archive.Close()
-			return fmt.Errorf("download lib bundle part %s: %w", part.Name, copyErr)
-		}
-		if closeErr != nil {
-			archive.Close()
-			return fmt.Errorf("close lib bundle part %s: %w", part.Name, closeErr)
-		}
-		if copied != part.Size || hex.EncodeToString(partHash.Sum(nil)) != part.SHA256 {
-			archive.Close()
-			return fmt.Errorf("lib bundle part %s failed its checksum or size check", part.Name)
-		}
-	}
-	if err := archive.Close(); err != nil {
-		return err
-	}
-	if hex.EncodeToString(archiveHash.Sum(nil)) != manifest.BundleSHA256 {
-		return errors.New("combined lib bundle failed its checksum check")
-	}
-	staging := filepath.Join(work, "staging")
-	if err := untarBundle(archivePath, staging); err != nil {
-		return err
-	}
-	source := filepath.Join(staging, platform)
-	if info, err := os.Stat(source); err != nil || !info.IsDir() {
-		if err != nil {
-			return fmt.Errorf("lib bundle has no %s directory: %w", platform, err)
-		}
-		return fmt.Errorf("lib bundle path %s is not a directory", platform)
-	}
-	return activateDirectory(destination, source, "lib")
-}
-
-func activateDirectory(destination, source, destinationName string) error {
-	final := filepath.Join(destination, destinationName)
-	backup := final + ".previous"
-	_ = os.RemoveAll(backup)
-	if _, err := os.Stat(final); err == nil {
-		if err := os.Rename(final, backup); err != nil {
-			return fmt.Errorf("stage previous %s: %w", destinationName, err)
-		}
-	}
-	if err := os.MkdirAll(filepath.Dir(final), 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(source, final); err != nil {
-		_ = os.Rename(backup, final)
-		return fmt.Errorf("activate %s: %w", destinationName, err)
-	}
-	_ = os.RemoveAll(backup)
-	return nil
-}
-
-func unzipBranch(archivePath, destination string) error {
-	zr, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return err
-	}
-	defer zr.Close()
-	archiveRoot := ""
-	for _, entry := range zr.File {
-		parts := strings.Split(filepath.ToSlash(entry.Name), "/")
-		if len(parts) < 2 || parts[0] == "" {
-			return fmt.Errorf("unexpected archive entry %q", entry.Name)
-		}
-		if archiveRoot == "" {
-			archiveRoot = parts[0]
-		} else if parts[0] != archiveRoot {
-			return fmt.Errorf("archive has multiple top-level roots (%q and %q)", archiveRoot, parts[0])
-		}
-		rel := filepath.Join(parts[1:]...)
-		if rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			return fmt.Errorf("unsafe archive path %q", entry.Name)
-		}
-		path := filepath.Join(destination, rel)
-		if entry.FileInfo().IsDir() {
-			if err := os.MkdirAll(path, 0o755); err != nil {
-				return err
-			}
-			continue
-		}
-		if entry.Mode()&os.ModeSymlink != 0 {
-			if runtime.GOOS == "windows" {
-				return fmt.Errorf("symbolic link is not permitted in Windows archive: %q", entry.Name)
-			}
-			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-				return err
-			}
-			in, err := entry.Open()
-			if err != nil {
-				return err
-			}
-			targetBytes, readErr := io.ReadAll(io.LimitReader(in, 4096))
-			in.Close()
-			if readErr != nil {
-				return readErr
-			}
-			target := string(targetBytes)
-			resolved := filepath.Clean(filepath.Join(filepath.Dir(path), target))
-			inside, relErr := filepath.Rel(destination, resolved)
-			if target == "" || strings.Contains(target, "\x00") || filepath.IsAbs(target) || relErr != nil || inside == ".." || strings.HasPrefix(inside, ".."+string(filepath.Separator)) {
-				return fmt.Errorf("unsafe symbolic link %q -> %q", entry.Name, target)
-			}
-			if err := os.Symlink(target, path); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return err
-		}
-		in, err := entry.Open()
-		if err != nil {
-			return err
-		}
-		out, err := os.OpenFile(path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, entry.Mode())
-		if err == nil {
-			_, err = io.Copy(out, io.LimitReader(in, 1<<30))
-			closeErr := out.Close()
-			if err == nil {
-				err = closeErr
-			}
-		}
-		in.Close()
-		if err != nil {
-			return err
-		}
+		item.activated = true
 	}
 	return nil
 }
@@ -298,7 +148,7 @@ func untarBundle(archivePath, destination string) error {
 	defer archive.Close()
 	compressed, err := gzip.NewReader(archive)
 	if err != nil {
-		return fmt.Errorf("open lib bundle gzip stream: %w", err)
+		return fmt.Errorf("open gzip stream: %w", err)
 	}
 	defer compressed.Close()
 	reader := tar.NewReader(compressed)
@@ -308,11 +158,11 @@ func untarBundle(archivePath, destination string) error {
 			return nil
 		}
 		if err != nil {
-			return fmt.Errorf("read lib bundle: %w", err)
+			return fmt.Errorf("read archive: %w", err)
 		}
 		relative, err := safeArchivePath(header.Name)
 		if err != nil {
-			return fmt.Errorf("unsafe lib bundle path %q: %w", header.Name, err)
+			return fmt.Errorf("unsafe archive path %q: %w", header.Name, err)
 		}
 		output := filepath.Join(destination, relative)
 		switch header.Typeflag {
@@ -360,8 +210,27 @@ func untarBundle(archivePath, destination string) error {
 			if err := safeSymlink(destination, output, header.Linkname); err != nil {
 				return fmt.Errorf("unsafe symbolic link %q -> %q: %w", header.Name, header.Linkname, err)
 			}
+		case tar.TypeLink:
+			targetRelative, err := safeArchivePath(header.Linkname)
+			if err != nil {
+				return fmt.Errorf("unsafe hard link %q -> %q: %w", header.Name, header.Linkname, err)
+			}
+			target := filepath.Join(destination, targetRelative)
+			info, err := os.Lstat(target)
+			if err != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("hard link target is not an existing regular file: %q", header.Linkname)
+			}
+			if err := ensureArchiveParents(destination, output); err != nil {
+				return err
+			}
+			if err := os.MkdirAll(filepath.Dir(output), 0o755); err != nil {
+				return err
+			}
+			if err := os.Link(target, output); err != nil {
+				return err
+			}
 		default:
-			return fmt.Errorf("unsupported lib bundle entry type for %q", header.Name)
+			return fmt.Errorf("unsupported archive entry type for %q", header.Name)
 		}
 	}
 }
@@ -417,11 +286,4 @@ func ensureArchiveParents(destination, output string) error {
 func validRepository(value string) bool {
 	parts := strings.Split(value, "/")
 	return len(parts) == 2 && parts[0] != "" && parts[1] != "" && !strings.ContainsAny(value, "\\ :?&#")
-}
-
-var validRef = regexp.MustCompile(`^[A-Za-z0-9._/-]+$`)
-var commitHash = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
-func validGitHubRef(value string) bool {
-	return validRef.MatchString(value) && !strings.Contains(value, "..")
 }

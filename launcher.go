@@ -25,32 +25,18 @@ import (
 const (
 	viewerURL  = "http://127.0.0.1:18080"
 	backendURL = "http://127.0.0.1:18081"
-	upstream   = "AntaresTechno/Viewer"
 )
 
 type State struct {
 	Root, URL, Message, Err, Logs string
 	Running, Busy                 bool
 }
-type libManifest struct {
-	UpstreamCommit string    `json:"upstream_commit"`
-	BundleFormat   string    `json:"bundle_format"`
-	BundleSHA256   string    `json:"bundle_sha256"`
-	BundleSize     int64     `json:"bundle_size"`
-	Parts          []libPart `json:"parts"`
-}
-
-type libPart struct {
-	Name   string `json:"name"`
-	SHA256 string `json:"sha256"`
-	Size   int64  `json:"size"`
-}
-
 type Launcher struct {
 	root, repository string
 	mu               sync.RWMutex
 	state            State
 	settings         DownloadSettings
+	openOnStart      bool
 	cmd              *exec.Cmd
 	webServer        *http.Server
 	listener         net.Listener
@@ -94,10 +80,20 @@ func NewLauncher(root, compiledRepository string, notify func()) *Launcher {
 		state.Err = err.Error()
 		settings = DownloadSettings{}
 	}
-	return &Launcher{root: root, repository: repo, notify: notify, settings: settings, state: state}
+	return &Launcher{root: root, repository: repo, notify: notify, settings: settings, state: state, openOnStart: true}
 }
 func (l *Launcher) Repository() string { return l.repository }
 func (l *Launcher) Snapshot() State    { l.mu.RLock(); defer l.mu.RUnlock(); return l.state }
+
+// SetOpenBrowserOnStart controls whether a successful start opens the Viewer
+// URL automatically. Desktop builds enable it; CLI builds keep the process in
+// the current terminal and leave navigation to the caller.
+func (l *Launcher) SetOpenBrowserOnStart(enabled bool) {
+	l.mu.Lock()
+	l.openOnStart = enabled
+	l.mu.Unlock()
+}
+
 func (l *Launcher) DownloadSettings() DownloadSettings {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
@@ -232,41 +228,20 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 	if settings.Proxy != "" {
 		l.appendLog("本次下载使用代理：" + redactedProxy(settings.Proxy))
 	}
-	// lib pins the commit that was main when its platform wheels were built. The
-	// visible installation order is web -> backend -> Python/dependencies.
-	l.set("正在读取 lib 依赖清单", nil, false)
-	manifest, err := fetchLibManifest(context.Background(), client, settings, l.Repository(), platform)
+	l.set("正在读取预发布文件清单", nil, false)
+	manifest, err := fetchReleaseManifest(context.Background(), client, settings, l.Repository(), releaseTag)
 	if err != nil {
-		l.set("读取 lib 依赖清单失败", err, false)
+		l.set("读取预发布文件清单失败", err, false)
 		return
 	}
-	if refresh || !webPresent(l.root) {
-		l.set("正在拉取 web 前端", nil, false)
-		if err := InstallTree(context.Background(), client, settings, l.root, l.Repository(), "refs/heads/web", "web", "web"); err != nil {
-			l.set("安装 web 前端失败", err, false)
+	if refresh || ready(l.root, manifest.UpstreamCommit) != nil {
+		l.set("正在下载并校验预发布组件", nil, false)
+		if err := InstallRelease(context.Background(), client, settings, l.root, l.Repository(), releaseTag, platform, manifest); err != nil {
+			l.set("安装预发布组件失败", err, false)
 			return
 		}
-	}
-	if refresh || !backendPresent(l.root) {
-		l.set("正在从 Viewer main 对应提交拉取后端", nil, false)
-		if err := InstallTree(context.Background(), client, settings, l.root, upstream, manifest.UpstreamCommit, "backend", "backend"); err != nil {
-			l.set("安装 Viewer 后端失败", err, false)
-			return
-		}
-	}
-	if refresh || !libPresent(l.root) {
-		l.set("正在拉取嵌入式 Python 与依赖包", nil, false)
-		var installErr error
-		if manifest.usesSplitBundle() {
-			installErr = InstallSplitLib(context.Background(), client, settings, l.root, l.Repository(), platform, manifest)
-		} else {
-			l.appendLog("检测到旧版完整 lib，使用兼容下载方式")
-			installErr = InstallTree(context.Background(), client, settings, l.root, l.Repository(), "refs/heads/lib", "lib/"+platform, "lib")
-		}
-		if installErr != nil {
-			l.set("安装 lib 依赖失败", installErr, false)
-			return
-		}
+	} else {
+		l.appendLog("本地组件与预发布清单一致，无需重新下载")
 	}
 	if err := ready(l.root, manifest.UpstreamCommit); err != nil {
 		l.set("安装完整性检查失败", err, false)
@@ -283,50 +258,13 @@ func (l *Launcher) EnsureAndStart(refresh bool) {
 		return
 	}
 	l.set("Viewer 正在运行", nil, true)
-	l.OpenBrowser()
+	l.mu.RLock()
+	openOnStart := l.openOnStart
+	l.mu.RUnlock()
+	if openOnStart {
+		l.OpenBrowser()
+	}
 }
-
-func fetchLibManifest(ctx context.Context, client *http.Client, settings DownloadSettings, repository, platform string) (libManifest, error) {
-	if !validRepository(repository) {
-		return libManifest{}, fmt.Errorf("invalid GitHub repository %q", repository)
-	}
-	manifestURL := settings.rewrite("https://raw.githubusercontent.com/" + repository + "/lib/lib/" + platform + "/lib.json")
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
-	if err != nil {
-		return libManifest{}, err
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return libManifest{}, err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return libManifest{}, fmt.Errorf("GitHub returned %s", response.Status)
-	}
-	var manifest libManifest
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&manifest); err != nil {
-		return libManifest{}, err
-	}
-	if !commitHash.MatchString(manifest.UpstreamCommit) {
-		return libManifest{}, errors.New("lib.json has no immutable 40-character upstream_commit")
-	}
-	if manifest.hasBundleMetadata() {
-		if err := manifest.validateBundle(); err != nil {
-			return libManifest{}, err
-		}
-	}
-	return manifest, nil
-}
-
-func webPresent(root string) bool {
-	_, err := os.Stat(filepath.Join(root, "web", "index.html"))
-	return err == nil
-}
-func backendPresent(root string) bool {
-	_, err := os.Stat(filepath.Join(root, "backend", "app", "main.py"))
-	return err == nil
-}
-func libPresent(root string) bool { _, err := os.Stat(pythonExecutable(root)); return err == nil }
 
 func platformKey() (string, error) {
 	switch runtime.GOOS + "/" + runtime.GOARCH {
@@ -350,8 +288,15 @@ func ready(root, expectedCommit string) error {
 			return fmt.Errorf("required file %s: %w", path, err)
 		}
 	}
-	var web, lib libManifest
-	for path, destination := range map[string]*libManifest{filepath.Join(root, "web", "release.json"): &web, filepath.Join(root, "lib", "lib.json"): &lib} {
+	type componentMetadata struct {
+		UpstreamCommit string `json:"upstream_commit"`
+	}
+	components := map[string]*componentMetadata{
+		filepath.Join(root, "web", "release.json"):     {},
+		filepath.Join(root, "backend", "release.json"): {},
+		filepath.Join(root, "lib", "release.json"):     {},
+	}
+	for path, destination := range components {
 		contents, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -360,8 +305,10 @@ func ready(root, expectedCommit string) error {
 			return fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
-	if web.UpstreamCommit != expectedCommit || lib.UpstreamCommit != expectedCommit {
-		return fmt.Errorf("web/lib/backend commits differ (expected %s, web %s, lib %s)", expectedCommit, web.UpstreamCommit, lib.UpstreamCommit)
+	for path, component := range components {
+		if component.UpstreamCommit != expectedCommit {
+			return fmt.Errorf("component %s has commit %s, expected %s", path, component.UpstreamCommit, expectedCommit)
+		}
 	}
 	return nil
 }

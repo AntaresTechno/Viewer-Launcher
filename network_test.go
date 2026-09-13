@@ -3,7 +3,7 @@ package main
 import "testing"
 
 func TestDownloadSettingsRewrite(t *testing.T) {
-	original := "https://codeload.github.com/owner/repo/zip/main"
+	original := "https://github.com/owner/repo/releases/download/preview/viewer-web.tar.gz"
 	tests := []struct {
 		name, mirror, want string
 	}{
