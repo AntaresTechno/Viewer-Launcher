@@ -16,12 +16,9 @@ ASSETS = {
     "viewer-runtime-windows-amd64.tar.gz": ("runtime", "windows-amd64", "lib", "Windows x64 Python 与依赖"),
     "viewer-runtime-linux-amd64.tar.gz": ("runtime", "linux-amd64", "lib", "Linux x64 Python 与依赖"),
     "viewer-runtime-linux-arm64.tar.gz": ("runtime", "linux-arm64", "lib", "Linux ARM64 Python 与依赖"),
-    "viewer-launcher-windows-amd64.exe": ("launcher", "windows-amd64", "", "Windows x64 桌面启动器"),
-    "viewer-launcher-cli-windows-amd64.exe": ("cli", "windows-amd64", "", "Windows x64 命令行启动器"),
-    "viewer-launcher-linux-amd64": ("launcher", "linux-amd64", "", "Linux x64 桌面启动器"),
-    "viewer-launcher-cli-linux-amd64": ("cli", "linux-amd64", "", "Linux x64 命令行启动器"),
-    "viewer-launcher-linux-arm64": ("launcher", "linux-arm64", "", "Linux ARM64 桌面启动器"),
-    "viewer-launcher-cli-linux-arm64": ("cli", "linux-arm64", "", "Linux ARM64 命令行启动器"),
+    "viewer-launchers-windows-amd64.zip": ("launchers", "windows-amd64", "", "Windows x64 桌面版与 CLI 启动器"),
+    "viewer-launchers-linux-amd64.tar.gz": ("launchers", "linux-amd64", "", "Linux x64 桌面版与 CLI 启动器"),
+    "viewer-launchers-linux-arm64.tar.gz": ("launchers", "linux-arm64", "", "Linux ARM64 桌面版与 CLI 启动器"),
 }
 
 

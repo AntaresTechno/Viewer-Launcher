@@ -13,8 +13,8 @@
 | `viewer-web.tar.gz` | 已编译的 Viewer 前端及版本元数据 |
 | `viewer-backend.tar.gz` | 与前端同一提交的 FastAPI 后端源码 |
 | `viewer-runtime-<platform>.tar.gz` | 对应平台的 CPython、Python 包和许可证 |
-| `viewer-launcher-<platform>[.exe]` | Gio 桌面启动器 |
-| `viewer-launcher-cli-<platform>[.exe]` | 无界面命令行启动器 |
+| `viewer-launchers-windows-amd64.zip` | Windows x64 的 Gio 桌面版与 CLI 启动器 |
+| `viewer-launchers-linux-<arch>.tar.gz` | Linux 对应架构的 Gio 桌面版与 CLI 启动器 |
 
 安装逻辑为：读取 `preview/release-manifest.json` → 选择 web、backend 和当前平台 runtime → 逐个下载并校验声明的大小和 SHA-256 → 安全解压到临时目录 → 全部成功后以目录重命名一次性切换三项组件 → 核验三份 `release.json` 的上游提交。任何下载、校验或解压失败都不会替换现有组件，`data`、设置和日志不会参与更新。
 

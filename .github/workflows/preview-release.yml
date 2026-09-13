@@ -266,10 +266,27 @@ jobs:
           flags="-s -w -X main.repository=${GITHUB_REPOSITORY} -X main.version=preview-${GITHUB_SHA::7} -X main.releaseTag=${RELEASE_TAG}"
           go build -trimpath -ldflags "$flags" -o "viewer-launcher-${TARGET}${EXTENSION}" .
           go build -tags cli -trimpath -ldflags "$flags" -o "viewer-launcher-cli-${TARGET}${EXTENSION}" .
+      - name: Package Windows launchers
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Compress-Archive -LiteralPath @(
+            'viewer-launcher-windows-amd64.exe',
+            'viewer-launcher-cli-windows-amd64.exe'
+          ) -DestinationPath viewer-launchers-windows-amd64.zip -CompressionLevel Optimal
+      - name: Package Linux launchers
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.key }}
+        run: |
+          tar -czf "viewer-launchers-${TARGET}.tar.gz" \
+            "viewer-launcher-${TARGET}" \
+            "viewer-launcher-cli-${TARGET}"
       - uses: actions/upload-artifact@v6
         with:
           name: payload-launcher-${{ matrix.key }}
-          path: viewer-launcher-*
+          path: viewer-launchers-*
           if-no-files-found: error
 
   publish:
