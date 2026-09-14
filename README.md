@@ -1,6 +1,20 @@
-# Viewer Launcher  
+<p align="center">
+  <img src="1080.png" alt="Viewer Launcher" width="360"/>
+</p>
 
-一个 Windows、Linux 的 Go + Gio 原生启动器。它以 Go HTTP 服务承载 Viewer 前端，反向代理 API 到隔离的 CPython 后端。
+<div align="center">
+
+# Antares · Viewer Launcher
+
+**Windows、Linux 的 Go + Gio 原生启动器**
+
+[![Go](https://img.shields.io/badge/Go-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev/)
+[![Gio](https://img.shields.io/badge/Gio-9e4cbd?style=flat-square&logo=gio&logoColor=white)](https://gioui.org/)
+[![License GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue?style=flat-square)](#许可证与供应链)
+
+</div>
+
+它以 Go HTTP 服务承载 Viewer 前端，反向代理 API 到隔离的 CPython 后端。
 浏览器和 Python 均只绑定本机回环地址；程序、SQLite 数据、设置和日志统一位于启动器同级的 `./program`，数据不会随组件更新被覆盖。开发时可通过 `VIEWER_LAUNCHER_ROOT` 覆盖该目录。
 
 ## 预发布结构
