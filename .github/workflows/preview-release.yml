@@ -341,6 +341,7 @@ jobs:
           printf '\n' >> new-commits.md
           if (( count > 100 )); then
             printf -- '- 另有 %d 个较早 commit 未展开。\n' "$((count - 100))" >> new-commits.md
+          fi
       - name: Generate manifest and release table
         env:
           UPSTREAM_COMMIT: ${{ needs.resolve-upstream.outputs.commit }}
